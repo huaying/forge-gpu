@@ -8,3 +8,8 @@ description = "GPU runtime for Forge: device management, memory, kernel dispatch
 
 [dependencies]
 forge-core = { path = "../forge-core" }
+cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-12060"], optional = true }
+
+[features]
+default = []
+cuda = ["dep:cudarc"]

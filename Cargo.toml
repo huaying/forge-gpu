@@ -20,7 +20,11 @@ path = "examples/particles.rs"
 
 [dependencies]
 forge-core = { path = "forge-core" }
-forge-runtime = { path = "forge-runtime" }
+forge-runtime = { path = "forge-runtime", features = ["cuda"] }
+
+[features]
+default = ["cuda"]
+cuda = ["forge-runtime/cuda"]
 
 [package]
 name = "forge-examples"
