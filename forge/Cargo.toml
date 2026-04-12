@@ -1,0 +1,12 @@
+[package]
+name = "forge-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A Rust-native GPU compute framework built for the age of AI"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-codegen = { path = "../forge-codegen" }
+forge-runtime = { path = "../forge-runtime" }

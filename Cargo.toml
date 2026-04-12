@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "forge",
+    "forge-core",
+    "forge-codegen",
+    "forge-runtime",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/huaying/forge-gpu"
+description = "A Rust-native GPU compute framework built for the age of AI"
+
+[[example]]
+name = "particles"
+path = "examples/particles.rs"
+
+[dependencies]
+forge-core = { path = "forge-core" }
+forge-runtime = { path = "forge-runtime" }
+
+[package]
+name = "forge-examples"
+version = "0.1.0"
+edition = "2024"

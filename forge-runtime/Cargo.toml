@@ -1,0 +1,10 @@
+[package]
+name = "forge-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GPU runtime for Forge: device management, memory, kernel dispatch"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
