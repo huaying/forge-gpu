@@ -20,6 +20,7 @@ mod tape;
 mod hashgrid;
 mod bvh;
 mod mesh;
+mod sparse;
 
 pub use device::*;
 pub use array::*;
@@ -31,3 +32,4 @@ pub use tape::Tape;
 pub use hashgrid::HashGrid;
 pub use bvh::{Bvh, Aabb};
 pub use mesh::Mesh;
+pub use sparse::CsrMatrix;
