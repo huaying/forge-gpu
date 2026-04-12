@@ -118,10 +118,15 @@ fn integrate(
   - `ray_cast()`: sphere-sweep ray test
   - `Aabb` type with full utility API
 - [x] **66 tests passing**
+- [x] **Mesh** (`forge_runtime::Mesh`)
+  - Triangle mesh with internal BVH
+  - `closest_point()`: closest point on surface (Voronoi region method)
+  - `ray_cast()`: Möller–Trumbore ray-triangle intersection with BVH
+  - Tested on quad floor + cube mesh
+- [x] **71 tests passing**
 
 ### Remaining
 
-- [ ] **`Mesh`** — triangle mesh queries (closest point on surface, ray-triangle)
 - [ ] **PyTorch interop** (`forge-interop`) — DLPack zero-copy, PyO3 bindings
 - [ ] **Sparse matrices** — CSR/BSR, SpMV, SpMM
 - [ ] **GPU BVH/HashGrid build** — current builds are CPU; GPU parallel build for large scenes
