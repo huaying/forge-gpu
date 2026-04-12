@@ -103,19 +103,28 @@ fn integrate(
   - Gradient descent optimization: energy 49.75 → 0.0 in 200 steps
   - All springs converge to exact rest length
 - [x] **58 tests passing** (all existing + new autodiff + vec3f tests)
+- [x] **Tape API** (`forge_runtime::Tape`)
+  - Record backward closures, replay in reverse order
+  - Multi-step differentiable simulation support
+- [x] **Atomic gradient accumulation**
+  - `atomicAdd` for adjoint array writes (safe for shared gradient targets)
+- [x] **HashGrid** (`forge_runtime::HashGrid`)
+  - Spatial hash grid: CPU build (counting sort), GPU arrays
+  - 3x3x3 neighborhood query with radius filtering
+- [x] **BVH** (`forge_runtime::Bvh`)
+  - Top-down median-split build from point positions — O(n log n)
+  - `query_sphere()`: find all points within radius
+  - `closest_point()`: nearest neighbor with AABB pruning
+  - `ray_cast()`: sphere-sweep ray test
+  - `Aabb` type with full utility API
+- [x] **66 tests passing**
 
 ### Remaining
 
-- [ ] **`Tape` API** — record kernel launches, `tape.backward()` auto-reversal
-- [ ] **Atomic gradient accumulation** — for kernels where multiple threads write to same adj element
-- [ ] **`forge-spatial`**: Spatial data structures
-  - `Bvh` — bounding volume hierarchy (build, refit, query)
-  - `HashGrid` — spatial hash grid for particle neighbor queries
-  - `Mesh` — triangle mesh (point queries, ray cast, closest point)
-- [ ] **PyTorch interop** (`forge-interop`)
-  - DLPack zero-copy tensor sharing
-  - PyO3 bindings
+- [ ] **`Mesh`** — triangle mesh queries (closest point on surface, ray-triangle)
+- [ ] **PyTorch interop** (`forge-interop`) — DLPack zero-copy, PyO3 bindings
 - [ ] **Sparse matrices** — CSR/BSR, SpMV, SpMM
+- [ ] **GPU BVH/HashGrid build** — current builds are CPU; GPU parallel build for large scenes
 
 ### Demo (actual working code)
 
