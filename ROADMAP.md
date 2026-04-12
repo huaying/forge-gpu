@@ -35,7 +35,6 @@ Forge development follows a milestone-based approach. Each milestone builds on t
 ### Not Delivered (deferred to M2+)
 
 - [ ] `#[derive(ForgeType)]` for custom structs as kernel params
-- [ ] `Array<Vec3f>` — custom types as array elements in kernels
 - [ ] Memory pool (arena allocator)
 - [ ] Stream/event synchronization primitives
 - [ ] CI/CD pipeline
@@ -76,50 +75,84 @@ fn integrate(
 
 ---
 
-## M2: Autodiff + Spatial Queries (Q3 2026)
+## M2: Autodiff + Spatial Queries (Q3 2026) — 🔨 In Progress
 
 **Goal:** Differentiable simulation. BVH and hash grid for spatial queries.
 
-### Deliverables
+**Status:** Autodiff core complete. Spatial queries not started.
 
-- [ ] **Autodiff**
-  - `Tape` type for recording kernel launches
-  - `#[kernel(autodiff)]` generates forward + adjoint kernels
-  - `tape.backward()` — reverse-mode automatic differentiation
-  - Gradient accumulation via atomic adds
-  - Support for control flow in adjoint (select-based)
+### Delivered (April 12, 2026)
+
+- [x] **`Array<Vec3f>` kernel support**
+  - Auto CUDA struct codegen with operator overloads (+, -, *, /, negation)
+  - Vec constructors: `Vec3f::new()`, `Vec3f::zero()`, `Vec3f::splat()`
+  - Field access: `.x`, `.y`, `.z` in kernels
+  - cudarc `DeviceRepr` + `ValidAsZeroBits` for Vec2/3/4 (f32, f64)
+- [x] **`#[kernel(autodiff)]`** — reverse-mode automatic differentiation
+  - Parses kernel body → SSA-like IR (ForwardOp)
+  - Generates adjoint kernel via chain rule (reverse statement order)
+  - Type-aware: scalar (float) and vector (forge_vec3f) adjoints
+  - Supported ops: +, -, *, /, sin, cos, sqrt, exp, log, abs
+  - Vec3f adjoints: vec+vec, vec*scalar, field access, constructors
+  - Integer arithmetic (index computations) correctly excluded
+  - `launch_adjoint()` function for backward pass
+  - Forward recompute pass for intermediate values
+- [x] **Differentiable spring simulation demo** (`examples/spring_sim.rs`)
+  - Forward: compute spring elastic energy
+  - Backward: compute forces via `launch_adjoint()`
+  - Gradient descent optimization: energy 49.75 → 0.0 in 200 steps
+  - All springs converge to exact rest length
+- [x] **58 tests passing** (all existing + new autodiff + vec3f tests)
+
+### Remaining
+
+- [ ] **`Tape` API** — record kernel launches, `tape.backward()` auto-reversal
+- [ ] **Atomic gradient accumulation** — for kernels where multiple threads write to same adj element
 - [ ] **`forge-spatial`**: Spatial data structures
   - `Bvh` — bounding volume hierarchy (build, refit, query)
   - `HashGrid` — spatial hash grid for particle neighbor queries
   - `Mesh` — triangle mesh (point queries, ray cast, closest point)
-  - All structures work in kernels via device-side query APIs
 - [ ] **PyTorch interop** (`forge-interop`)
   - DLPack zero-copy tensor sharing
-  - PyO3 bindings for calling Forge kernels from Python
-  - `torch.autograd.Function` wrapper for end-to-end gradients
-- [ ] **Sparse matrices**
-  - CSR and BSR formats
-  - SpMV, SpMM operations
-  - Integration with autodiff
+  - PyO3 bindings
+- [ ] **Sparse matrices** — CSR/BSR, SpMV, SpMM
 
-### Demo
+### Demo (actual working code)
 
 ```rust
-// M2 demo: differentiable cloth simulation
+use forge_macros::kernel;
+use forge_runtime::{Array, Device, cuda};
+
 #[kernel(autodiff)]
-fn spring_energy(x: &Array<Vec3f>, springs: &Array<[u32; 2]>,
-                 rest: &Array<f32>, energy: &mut Array<f32>) {
+fn pair_spring_energy(
+    px: &Array<f32>, py: &Array<f32>, pz: &Array<f32>,
+    rest_len: &Array<f32>, stiffness: f32,
+    energy: &mut Array<f32>, n_springs: i32,
+) {
     let tid = thread_id();
-    let (i, j) = (springs[tid][0], springs[tid][1]);
-    let d = length(x[i] - x[j]) - rest[tid];
-    energy[tid] = 0.5 * d * d;
+    if tid < n_springs {
+        let i0 = tid * 2;
+        let i1 = tid * 2 + 1;
+        let dx = px[i0] - px[i1];
+        let dy = py[i0] - py[i1];
+        let dz = pz[i0] - pz[i1];
+        let dist = sqrt(dx * dx + dy * dy + dz * dz);
+        let stretch = dist - rest_len[tid];
+        energy[tid] = stiffness * stretch * stretch * 0.5;
+    }
 }
 
-// Backprop through the simulation to optimize rest lengths
-let tape = Tape::new();
-tape.record(|| spring_energy.launch(n, &x, &springs, &rest, &mut energy));
-tape.backward(&energy);
-let grad_x = tape.gradient(&x);
+// Forward: compute energy
+pair_spring_energy::launch(&px, &py, &pz, &rest, k, &mut energy, n, n, 0)?;
+
+// Backward: compute gradients (forces)
+pair_spring_energy::launch_adjoint(
+    &px, &py, &pz, &rest, k, &mut energy, n,
+    &mut adj_px, &mut adj_py, &mut adj_pz, &mut adj_rest, &mut adj_energy,
+    n, 0,
+)?;
+
+// Run: cargo run --example spring_sim --release
 ```
 
 ---
