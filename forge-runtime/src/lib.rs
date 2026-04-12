@@ -18,6 +18,7 @@ pub mod cuda;
 mod kernel;
 mod tape;
 mod hashgrid;
+mod bvh;
 
 pub use device::*;
 pub use array::*;
@@ -27,3 +28,4 @@ pub use cuda::CudaContext;
 pub use kernel::*;
 pub use tape::Tape;
 pub use hashgrid::HashGrid;
+pub use bvh::{Bvh, Aabb};
