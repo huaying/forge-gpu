@@ -124,11 +124,17 @@ fn integrate(
   - `ray_cast()`: Möller–Trumbore ray-triangle intersection with BVH
   - Tested on quad floor + cube mesh
 - [x] **71 tests passing**
+- [x] **CsrMatrix** (`forge_runtime::CsrMatrix`)
+  - CSR sparse matrix format
+  - `from_triplets()` with duplicate summing
+  - `spmv()` CPU, `spmv_gpu()` GPU (one-thread-per-row CUDA kernel)
+  - `transpose()`, `identity()`, `diagonal()`
+  - Tested: 3x3 dense, 1000x1000 tridiagonal (GPU matches CPU)
+- [x] **78 tests passing**
 
-### Remaining
+### Remaining (requires external dependencies)
 
-- [ ] **PyTorch interop** (`forge-interop`) — DLPack zero-copy, PyO3 bindings
-- [ ] **Sparse matrices** — CSR/BSR, SpMV, SpMM
+- [ ] **PyTorch interop** (`forge-interop`) — DLPack zero-copy, PyO3 bindings *(needs Python/PyTorch environment)*
 - [ ] **GPU BVH/HashGrid build** — current builds are CPU; GPU parallel build for large scenes
 
 ### Demo (actual working code)
