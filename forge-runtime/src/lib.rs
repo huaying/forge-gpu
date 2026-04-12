@@ -16,6 +16,7 @@ mod error;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 mod kernel;
+mod tape;
 
 pub use device::*;
 pub use array::*;
@@ -23,3 +24,4 @@ pub use error::*;
 #[cfg(feature = "cuda")]
 pub use cuda::CudaContext;
 pub use kernel::*;
+pub use tape::Tape;

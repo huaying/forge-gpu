@@ -33,6 +33,6 @@ pub use forge_macros::func;
 /// Common imports for Forge users.
 pub mod prelude {
     pub use forge_core::*;
-    pub use forge_runtime::{Array, Device, Forge};
+    pub use forge_runtime::{Array, Device, Forge, Tape};
     pub use forge_macros::{kernel, func};
 }

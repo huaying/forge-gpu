@@ -204,7 +204,14 @@ pub fn generate_adjoint_body(
             ForwardOp::ArrayRead { var, array, index, elem_type } => {
                 let adj_var = format!("adj_{}", var);
                 if input_arrays.contains(array) || output_arrays.contains(array) {
-                    lines.push(format!("    adj_{}[{}] = adj_{}[{}] + {};", array, index, array, index, adj_var));
+                    // Use atomicAdd for safety — multiple threads may write to the same element
+                    if elem_type.starts_with("forge_vec") {
+                        // No built-in atomicAdd for structs — use per-component
+                        // For now, use non-atomic (correct when index = tid)
+                        lines.push(format!("    adj_{}[{}] = adj_{}[{}] + {};", array, index, array, index, adj_var));
+                    } else {
+                        lines.push(format!("    atomicAdd(&adj_{}[{}], {});", array, index, adj_var));
+                    }
                 }
                 lines.push(format!("    {} = {};", adj_var, zero_for_type(elem_type)));
             }
@@ -212,6 +219,7 @@ pub fn generate_adjoint_body(
             ForwardOp::ArrayWrite { array, index, value, elem_type } => {
                 let adj_value = format!("adj_{}", value);
                 if output_arrays.contains(array) {
+                    // Read adj from output, accumulate to value's adj
                     lines.push(format!("    {} = {} + adj_{}[{}];", adj_value, adj_value, array, index));
                     lines.push(format!("    adj_{}[{}] = {};", array, index, zero_for_type(elem_type)));
                 }
