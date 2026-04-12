@@ -60,7 +60,7 @@ impl CompiledKernel {
     ///
     /// The `setup` closure receives a mutable launch args builder
     /// and should add all kernel arguments via `.arg()`.
-    pub fn launch<F>(&self, ordinal: usize, dim: usize, setup: F) -> Result<(), String>
+    pub fn launch<F>(&self, ordinal: usize, _dim: usize, setup: F) -> Result<(), String>
     where
         F: FnOnce(&cudarc::driver::safe::CudaFunction, &Arc<cudarc::driver::safe::CudaStream>) -> Result<(), String>,
     {

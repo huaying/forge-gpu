@@ -3,6 +3,7 @@ members = [
     "forge",
     "forge-core",
     "forge-codegen",
+    "forge-macros",
     "forge-runtime",
 ]
 resolver = "2"
@@ -18,8 +19,13 @@ description = "A Rust-native GPU compute framework built for the age of AI"
 name = "particles"
 path = "examples/particles.rs"
 
+[[example]]
+name = "kernel_demo"
+path = "examples/kernel_demo.rs"
+
 [dependencies]
 forge-core = { path = "forge-core" }
+forge-macros = { path = "forge-macros" }
 forge-runtime = { path = "forge-runtime", features = ["cuda"] }
 
 [features]

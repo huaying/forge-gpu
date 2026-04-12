@@ -12,9 +12,11 @@
 //! use forge::prelude::*;
 //!
 //! #[kernel]
-//! fn add_one(data: &mut Array<f32>) {
-//!     let tid = thread_id();
-//!     data[tid] = data[tid] + 1.0;
+//! fn add_one(data: &mut Array<f32>, n: i32) {
+//!     let i = thread_id();
+//!     if i < n {
+//!         data[i] += 1.0;
+//!     }
 //! }
 //! ```
 
@@ -22,8 +24,12 @@ pub use forge_core as core;
 pub use forge_codegen as codegen;
 pub use forge_runtime as runtime;
 
+/// Re-export the `#[kernel]` proc macro.
+pub use forge_macros::kernel;
+
 /// Common imports for Forge users.
 pub mod prelude {
     pub use forge_core::*;
-    pub use forge_runtime::{Device, Forge};
+    pub use forge_runtime::{Array, Device, Forge};
+    pub use forge_macros::kernel;
 }

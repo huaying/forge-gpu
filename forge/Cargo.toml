@@ -9,4 +9,5 @@ description = "A Rust-native GPU compute framework built for the age of AI"
 [dependencies]
 forge-core = { path = "../forge-core" }
 forge-codegen = { path = "../forge-codegen" }
+forge-macros = { path = "../forge-macros" }
 forge-runtime = { path = "../forge-runtime" }
