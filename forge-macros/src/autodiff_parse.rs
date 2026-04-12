@@ -183,8 +183,12 @@ fn parse_expr_to_value(expr: &Expr, ops: &mut Vec<ForwardOp>, ctr: &mut SsaCount
                 let tmp = ctr.fresh("t");
                 // Infer result type
                 let res_type = if lt.starts_with("forge_vec") || rt.starts_with("forge_vec") {
-                    // vec op: result is vec unless it's a dot-like thing
                     if lt.starts_with("forge_vec") { lt.clone() } else { rt.clone() }
+                } else if lt == "int" && rt == "int" {
+                    "int".to_string()
+                } else if lt == "int" || rt == "int" {
+                    // int op float → float; int op int → int
+                    if lt == "float" || rt == "float" { "float".to_string() } else { "int".to_string() }
                 } else {
                     "float".to_string()
                 };

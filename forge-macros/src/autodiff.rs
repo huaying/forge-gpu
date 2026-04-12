@@ -121,6 +121,11 @@ pub fn generate_adjoint_body(
             ForwardOp::ThreadId { .. } | ForwardOp::Literal { .. } => {}
 
             ForwardOp::BinOp { var, left, op, right, result_type, left_type, right_type } => {
+                // Skip adjoint for integer arithmetic (index computations)
+                if result_type == "int" {
+                    continue;
+                }
+
                 let adj_var = format!("adj_{}", var);
                 let adj_left = format!("adj_{}", left);
                 let adj_right = format!("adj_{}", right);

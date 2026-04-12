@@ -86,11 +86,15 @@ pub fn expand_kernel_autodiff(input: TokenStream) -> Result<TokenStream, syn::Er
     adj_cuda.push_str(&adj_param_strs.join(", "));
     adj_cuda.push_str(") {\n");
 
-    // Thread ID (same as forward)
+    // Thread ID — already declared at top
     adj_cuda.push_str("    int tid = blockIdx.x * blockDim.x + threadIdx.x;\n\n");
 
     // Declare adj_ locals for all SSA vars and named vars (deduplicated)
     let mut declared_adj: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Mark 'tid' as already declared so it doesn't get redeclared
+    declared_adj.insert("tid".to_string());
+    declared_adj.insert("fwd_tid".to_string());
 
     // Declare adj_ for scalar params
     for p in &params {
@@ -339,13 +343,20 @@ fn declare_forward_vars_recursive(
                     cuda.push_str(&format!("    {} {} = {{}};\n", cuda_type, var));
                 }
             }
-            ForwardOp::BinOp { var, result_type, .. } | ForwardOp::UnaryFunc { var, result_type, .. } => {
+            ForwardOp::BinOp { var, result_type, .. } => {
                 if declared.insert(format!("fwd_{}", var)) {
                     if result_type.starts_with("forge_vec") {
                         cuda.push_str(&format!("    {} {} = {{}};\n", result_type, var));
+                    } else if result_type == "int" {
+                        cuda.push_str(&format!("    int {} = 0;\n", var));
                     } else {
                         cuda.push_str(&format!("    float {} = 0.0f;\n", var));
                     }
+                }
+            }
+            ForwardOp::UnaryFunc { var, result_type, .. } => {
+                if declared.insert(format!("fwd_{}", var)) {
+                    cuda.push_str(&format!("    float {} = 0.0f;\n", var));
                 }
             }
             ForwardOp::ArrayRead { var, elem_type, .. } => {
