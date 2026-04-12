@@ -17,6 +17,7 @@ mod error;
 pub mod cuda;
 mod kernel;
 mod tape;
+mod hashgrid;
 
 pub use device::*;
 pub use array::*;
@@ -25,3 +26,4 @@ pub use error::*;
 pub use cuda::CudaContext;
 pub use kernel::*;
 pub use tape::Tape;
+pub use hashgrid::HashGrid;
