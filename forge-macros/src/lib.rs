@@ -9,6 +9,7 @@
 extern crate proc_macro;
 
 mod cuda_emit;
+mod func;
 mod kernel;
 
 use proc_macro::TokenStream;
@@ -49,6 +50,33 @@ use proc_macro::TokenStream;
 #[proc_macro_attribute]
 pub fn kernel(_attr: TokenStream, item: TokenStream) -> TokenStream {
     kernel::expand_kernel(item.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+/// Mark a function as a GPU device function callable from kernels.
+///
+/// The `#[func]` macro transforms a Rust function into a CUDA `__device__` function.
+/// The generated module contains a `CUDA_SOURCE` constant that should be passed
+/// to `launch_with_funcs()` when launching kernels that reference this function.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use forge_macros::func;
+///
+/// #[func]
+/// fn clamp_val(x: f32, lo: f32, hi: f32) -> f32 {
+///     if x < lo { return lo; }
+///     if x > hi { return hi; }
+///     return x;
+/// }
+///
+/// // Generated: clamp_val::CUDA_SOURCE (a __device__ function)
+/// ```
+#[proc_macro_attribute]
+pub fn func(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    func::expand_func(item.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

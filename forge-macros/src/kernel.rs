@@ -34,6 +34,7 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
     // Build the launch function parameters (Rust side)
     let launch_params = build_launch_params(&params);
     let launch_arg_pushes = build_launch_arg_pushes(&params);
+    let launch_arg_names = build_launch_arg_names(&params);
 
     let expanded = quote! {
         /// Generated kernel module for `#fn_name_str`.
@@ -46,16 +47,32 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
             /// The kernel function name in the CUDA source.
             pub const KERNEL_NAME: &str = #fn_name_str;
 
-            /// Cached compiled kernel (compiled on first launch).
+            /// Cached compiled kernel (compiled on first launch, no device funcs).
             static COMPILED: ::std::sync::OnceLock<::forge_runtime::CompiledKernel> =
                 ::std::sync::OnceLock::new();
 
-            /// Get or compile the kernel.
+            /// Get or compile the kernel (no device functions).
             pub fn compiled() -> &'static ::forge_runtime::CompiledKernel {
                 COMPILED.get_or_init(|| {
                     ::forge_runtime::CompiledKernel::compile(CUDA_SOURCE, KERNEL_NAME)
                         .expect(&format!("Failed to compile kernel '{}'", KERNEL_NAME))
                 })
+            }
+
+            /// Compile the kernel with device function sources prepended.
+            ///
+            /// This is NOT cached via OnceLock since different func combinations
+            /// produce different sources. Callers should cache the result themselves
+            /// if calling repeatedly.
+            pub fn compile_with_funcs(device_func_sources: &[&str]) -> ::forge_runtime::CompiledKernel {
+                let mut full_source = String::new();
+                for src in device_func_sources {
+                    full_source.push_str(src);
+                    full_source.push('\n');
+                }
+                full_source.push_str(CUDA_SOURCE);
+                ::forge_runtime::CompiledKernel::compile(&full_source, KERNEL_NAME)
+                    .expect(&format!("Failed to compile kernel '{}' with device funcs", KERNEL_NAME))
             }
 
             /// Launch this kernel on the GPU.
@@ -66,7 +83,53 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
                 #(#launch_params,)*
                 dim: usize,
                 ordinal: usize,
-            ) -> Result<(), String> {
+            ) -> Result<(), ::forge_runtime::ForgeError> {
+                let kernel = compiled();
+                launch_with_kernel(kernel, #(#launch_arg_names,)* dim, ordinal)
+            }
+
+            /// Launch this kernel with device function sources prepended.
+            ///
+            /// Pass `&[func_name::CUDA_SOURCE]` for each `#[func]` used.
+            pub fn launch_with_funcs(
+                #(#launch_params,)*
+                dim: usize,
+                ordinal: usize,
+                device_func_sources: &[&str],
+            ) -> Result<(), ::forge_runtime::ForgeError> {
+                let kernel = compile_with_funcs(device_func_sources);
+                launch_with_kernel(&kernel, #(#launch_arg_names,)* dim, ordinal)
+            }
+
+            /// Launch with an explicit LaunchConfig.
+            pub fn launch_with_config(
+                #(#launch_params,)*
+                ordinal: usize,
+                config: ::forge_runtime::cuda::LaunchConfig,
+            ) -> Result<(), ::forge_runtime::ForgeError> {
+                let kernel = compiled();
+                let func = kernel.get_function(ordinal)?;
+                let stream = ::forge_runtime::cuda::default_stream(ordinal);
+
+                unsafe {
+                    use ::forge_runtime::cuda::PushKernelArg;
+                    let mut builder = stream.launch_builder(&func);
+                    #(#launch_arg_pushes)*
+                    builder.launch(config)
+                        .map_err(|e| ::forge_runtime::ForgeError::LaunchFailed(format!("{:?}", e)))?;
+                }
+
+                stream.synchronize()
+                    .map_err(|e| ::forge_runtime::ForgeError::SyncFailed(format!("{:?}", e)))?;
+                Ok(())
+            }
+
+            /// Launch asynchronously (no synchronize — caller must sync).
+            pub fn launch_async(
+                #(#launch_params,)*
+                dim: usize,
+                ordinal: usize,
+            ) -> Result<(), ::forge_runtime::ForgeError> {
                 let kernel = compiled();
                 let func = kernel.get_function(ordinal)?;
                 let stream = ::forge_runtime::cuda::default_stream(ordinal);
@@ -77,10 +140,32 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
                     let mut builder = stream.launch_builder(&func);
                     #(#launch_arg_pushes)*
                     builder.launch(config)
-                        .map_err(|e| format!("Kernel launch failed: {:?}", e))?;
+                        .map_err(|e| ::forge_runtime::ForgeError::LaunchFailed(format!("{:?}", e)))?;
                 }
 
-                stream.synchronize().map_err(|e| format!("Synchronize failed: {:?}", e))?;
+                Ok(())
+            }
+
+            fn launch_with_kernel(
+                kernel: &::forge_runtime::CompiledKernel,
+                #(#launch_params,)*
+                dim: usize,
+                ordinal: usize,
+            ) -> Result<(), ::forge_runtime::ForgeError> {
+                let func = kernel.get_function(ordinal)?;
+                let stream = ::forge_runtime::cuda::default_stream(ordinal);
+                let config = ::forge_runtime::cuda::LaunchConfig::for_num_elems(dim as u32);
+
+                unsafe {
+                    use ::forge_runtime::cuda::PushKernelArg;
+                    let mut builder = stream.launch_builder(&func);
+                    #(#launch_arg_pushes)*
+                    builder.launch(config)
+                        .map_err(|e| ::forge_runtime::ForgeError::LaunchFailed(format!("{:?}", e)))?;
+                }
+
+                stream.synchronize()
+                    .map_err(|e| ::forge_runtime::ForgeError::SyncFailed(format!("{:?}", e)))?;
                 Ok(())
             }
         }
@@ -107,6 +192,17 @@ fn build_launch_params(params: &[KernelParam]) -> Vec<TokenStream> {
                 let ty = scalar_type_tokens(&p.elem_type);
                 quote! { #name: #ty }
             }
+        })
+        .collect()
+}
+
+/// Build just the argument names for forwarding calls.
+fn build_launch_arg_names(params: &[KernelParam]) -> Vec<TokenStream> {
+    params
+        .iter()
+        .map(|p| {
+            let name = format_ident!("{}", p.name);
+            quote! { #name }
         })
         .collect()
 }

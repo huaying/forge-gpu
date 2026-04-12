@@ -185,6 +185,50 @@ fn infer_cuda_type_from_expr(expr: &Expr) -> Option<&'static str> {
     }
 }
 
+/// Generate a CUDA `__device__` function source.
+pub fn generate_device_func_source(
+    func_name: &str,
+    params: &[KernelParam],
+    body_stmts: &[Stmt],
+    return_type: Option<&Type>,
+) -> Result<String, syn::Error> {
+    let mut cuda = String::new();
+
+    // Return type
+    let ret_str = match return_type {
+        Some(ty) => {
+            let type_str = type_to_string(ty);
+            scalar_to_cuda(&type_str)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "void".to_string())
+        }
+        None => "void".to_string(),
+    };
+
+    cuda.push_str("__device__ ");
+    cuda.push_str(&ret_str);
+    cuda.push(' ');
+    cuda.push_str(func_name);
+    cuda.push('(');
+
+    let param_strs: Vec<String> = params
+        .iter()
+        .map(|p| format!("{} {}", p.cuda_type, p.name))
+        .collect();
+    cuda.push_str(&param_strs.join(", "));
+
+    cuda.push_str(") {\n");
+
+    for stmt in body_stmts {
+        let line = emit_stmt(stmt, 1)?;
+        cuda.push_str(&line);
+    }
+
+    cuda.push_str("}\n");
+
+    Ok(cuda)
+}
+
 /// Generate the complete CUDA C++ kernel source.
 pub fn generate_cuda_source(
     kernel_name: &str,

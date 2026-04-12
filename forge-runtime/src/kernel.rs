@@ -17,7 +17,7 @@ pub struct CompiledKernel {
 #[cfg(feature = "cuda")]
 impl CompiledKernel {
     /// Compile CUDA C++ source to PTX via nvrtc.
-    pub fn compile(source: &str, kernel_name: &str) -> Result<Self, String> {
+    pub fn compile(source: &str, kernel_name: &str) -> Result<Self, crate::ForgeError> {
         let ptx = cudarc::nvrtc::safe::compile_ptx_with_opts(
             source,
             cudarc::nvrtc::CompileOptions {
@@ -26,7 +26,7 @@ impl CompiledKernel {
                 ..Default::default()
             },
         )
-        .map_err(|e| format!("nvrtc compilation failed:\n{}", e))?;
+        .map_err(|e| crate::ForgeError::CompilationFailed(format!("{}", e)))?;
 
         Ok(Self {
             ptx,
@@ -39,30 +39,27 @@ impl CompiledKernel {
     pub fn get_function(
         &self,
         ordinal: usize,
-    ) -> Result<cudarc::driver::safe::CudaFunction, String> {
+    ) -> Result<cudarc::driver::safe::CudaFunction, crate::ForgeError> {
         let mut modules = self.modules.lock().unwrap();
 
         if !modules.contains_key(&ordinal) {
             let ctx = crate::cuda::get_context(ordinal);
             let module = ctx
                 .load_module(self.ptx.clone())
-                .map_err(|e| format!("Failed to load PTX module: {}", e))?;
+                .map_err(|e| crate::ForgeError::ModuleLoadFailed(format!("{}", e)))?;
             modules.insert(ordinal, module);
         }
 
         let module = modules.get(&ordinal).unwrap();
         module
             .load_function(&self.name)
-            .map_err(|e| format!("Failed to load function '{}': {}", self.name, e))
+            .map_err(|e| crate::ForgeError::FunctionLoadFailed(format!("'{}': {}", self.name, e)))
     }
 
     /// Launch this kernel on a device with the given dimension.
-    ///
-    /// The `setup` closure receives a mutable launch args builder
-    /// and should add all kernel arguments via `.arg()`.
-    pub fn launch<F>(&self, ordinal: usize, _dim: usize, setup: F) -> Result<(), String>
+    pub fn launch<F>(&self, ordinal: usize, _dim: usize, setup: F) -> Result<(), crate::ForgeError>
     where
-        F: FnOnce(&cudarc::driver::safe::CudaFunction, &Arc<cudarc::driver::safe::CudaStream>) -> Result<(), String>,
+        F: FnOnce(&cudarc::driver::safe::CudaFunction, &Arc<cudarc::driver::safe::CudaStream>) -> Result<(), crate::ForgeError>,
     {
         let func = self.get_function(ordinal)?;
         let stream = crate::cuda::default_stream(ordinal);
