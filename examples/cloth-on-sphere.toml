@@ -1,0 +1,41 @@
+# Cloth on Sphere — 2500 particles (50x50 grid) falling on a sphere
+# Run: forge run examples/cloth-on-sphere.toml
+
+[simulation]
+name = "cloth-on-sphere"
+type = "particles"
+dt = 0.0001
+substeps = 10
+duration = 1.0
+count = 2500
+
+[[fields]]
+name = "pos"
+type = "vec3f"
+count = 2500
+init = { type = "grid", spacing = 0.02, origin = [-0.5, 1.5, -0.5] }
+
+[[fields]]
+name = "vel"
+type = "vec3f"
+init = { type = "zero" }
+
+[[forces]]
+type = "gravity"
+value = [0.0, -9.81, 0.0]
+
+[[forces]]
+type = "drag"
+coefficient = 5.0
+
+[springs]
+stiffness = 10000.0
+damping = 50.0
+# Auto-generate grid springs: structural (horizontal + vertical)
+connections = []  # will be auto-generated from grid topology
+
+[[constraints]]
+type = "sphere"
+center = [0.0, 0.8, 0.0]
+radius = 0.3
+restitution = 0.0

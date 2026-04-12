@@ -4,7 +4,7 @@
 //!   forge run sim.toml
 //!   forge check sim.toml
 
-use forge_manifest::{SimManifest, run, validate};
+use forge_manifest::{SimManifest, run_manifest, validate};
 use std::env;
 
 fn main() {
@@ -64,7 +64,7 @@ fn main() {
                 manifest.simulation.substeps);
             println!();
 
-            match run(&manifest) {
+            match run_manifest(&manifest) {
                 Ok(result) => {
                     println!("✅ Simulation complete!");
                     println!("  Steps: {}", result.steps);
