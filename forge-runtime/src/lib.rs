@@ -19,6 +19,7 @@ mod kernel;
 mod tape;
 mod hashgrid;
 mod bvh;
+mod mesh;
 
 pub use device::*;
 pub use array::*;
@@ -29,3 +30,4 @@ pub use kernel::*;
 pub use tape::Tape;
 pub use hashgrid::HashGrid;
 pub use bvh::{Bvh, Aabb};
+pub use mesh::Mesh;
