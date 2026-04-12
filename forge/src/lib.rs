@@ -27,9 +27,12 @@ pub use forge_runtime as runtime;
 /// Re-export the `#[kernel]` proc macro.
 pub use forge_macros::kernel;
 
+/// Re-export the `#[func]` proc macro.
+pub use forge_macros::func;
+
 /// Common imports for Forge users.
 pub mod prelude {
     pub use forge_core::*;
     pub use forge_runtime::{Array, Device, Forge};
-    pub use forge_macros::kernel;
+    pub use forge_macros::{kernel, func};
 }

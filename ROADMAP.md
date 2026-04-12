@@ -6,51 +6,73 @@ Forge development follows a milestone-based approach. Each milestone builds on t
 
 ---
 
-## M1: Core Runtime & Type System (Q2 2026)
+## M1: Core Runtime & Type System (Q2 2026) ✅
 
 **Goal:** Run a simple kernel on the GPU from Rust. Type-safe array operations.
 
-### Deliverables
+**Status: COMPLETE** (April 12, 2026)
 
-- [ ] **`forge-core`**: Scalar types, `Vec2/3/4<T>`, `Mat22/33/44<T>`, `Quat<T>`
+### Delivered
+
+- [x] **`forge-core`**: Scalar types, `Vec2/3/4<T>`, `Mat22/33/44<T>`, `Quat<T>`
   - All math ops with operator overloading
-  - `#[derive(ForgeType)]` for custom structs
-  - Comprehensive tests against Warp's math output
-- [ ] **`forge-runtime`**: GPU device management
-  - CUDA driver API wrapper (device enum, context, streams)
-  - `Array<T>` — GPU array with typed allocation, H2D/D2H/D2D copy
-  - Memory pool (arena allocator for reducing `cuMemAlloc` overhead)
-  - Synchronization primitives (streams, events)
-- [ ] **`forge-codegen`**: Basic kernel compilation
-  - `#[kernel]` proc macro — parse Rust fn, emit CUDA C++
-  - `#[func]` proc macro — device-side callable functions
-  - Built-in function mapping (sin, cos, sqrt, dot, cross, normalize, etc.)
-  - Control flow: if/else, for loops, while loops
-  - Kernel launch with type-checked arguments
-- [ ] **`forge`**: Top-level crate
-  - `forge::prelude::*` with all common types
-  - `Forge::init()` context management
+  - 18 unit tests
+- [x] **`forge-runtime`**: GPU device management
+  - CUDA context via cudarc 0.19 (safe bindings)
+  - `Array<T>` — GPU array with typed allocation, H2D/D2H copy
+  - nvrtc JIT kernel compilation with OnceLock caching
+  - `ForgeError` typed error handling
+- [x] **`forge-macros`**: Kernel compilation
+  - `#[kernel]` proc macro — parse Rust fn, emit CUDA C++, generate host launch wrapper
+  - `#[func]` proc macro — device-callable `__device__` functions
+  - Built-in function mapping: sin, cos, sqrt, abs, min, max, floor, ceil, round, exp, log, pow, atan2
+  - Control flow: if/else, for loops (range-based), while loops
+  - Launch variants: `launch()`, `launch_async()`, `launch_with_config()`, `launch_with_funcs()`
+- [x] **GPU particle demo**: 100K particles, 300 steps, gravity + ground bounce
+  - 1.09 billion particle-steps/s on L40
+  - 54x faster than single-threaded CPU
 
-### Demo
+### Not Delivered (deferred to M2+)
+
+- [ ] `#[derive(ForgeType)]` for custom structs as kernel params
+- [ ] `Array<Vec3f>` — custom types as array elements in kernels
+- [ ] Memory pool (arena allocator)
+- [ ] Stream/event synchronization primitives
+- [ ] CI/CD pipeline
+- [ ] Benchmarks (criterion)
+
+### Demo (actual working code)
 
 ```rust
-// M1 demo: 100K particle simulation (matching our Warp demo)
+use forge_macros::kernel;
+use forge_runtime::{Array, Device, cuda};
+
 #[kernel]
-fn integrate(pos: &mut Array<Vec3f>, vel: &mut Array<Vec3f>, dt: f32) {
+fn integrate(
+    pos_x: &mut Array<f32>, pos_y: &mut Array<f32>, pos_z: &mut Array<f32>,
+    vel_x: &mut Array<f32>, vel_y: &mut Array<f32>, vel_z: &mut Array<f32>,
+    dt: f32, gravity: f32, ground_y: f32, restitution: f32, n: i32,
+) {
     let tid = thread_id();
-    vel[tid] = vel[tid] + Vec3f::new(0.0, -9.81 * dt, 0.0);
-    pos[tid] = pos[tid] + vel[tid] * dt;
-    if pos[tid].y < 0.0 {
-        pos[tid] = Vec3f::new(pos[tid].x, 0.0, pos[tid].z);
-        vel[tid] = Vec3f::new(vel[tid].x, -vel[tid].y * 0.7, vel[tid].z);
+    if tid < n {
+        vel_y[tid] = vel_y[tid] + gravity * dt;
+        pos_x[tid] = pos_x[tid] + vel_x[tid] * dt;
+        pos_y[tid] = pos_y[tid] + vel_y[tid] * dt;
+        pos_z[tid] = pos_z[tid] + vel_z[tid] * dt;
+        if pos_y[tid] < ground_y {
+            pos_y[tid] = ground_y;
+            vel_y[tid] = vel_y[tid] * restitution * -1.0;
+        }
     }
 }
+
+// Run: cargo run --example particles --release
 ```
 
-### Metrics
-- Kernel launch overhead within 2x of raw CUDA
-- Compilation time < 5s for simple kernels
-- Zero unsafe in user-facing API
+### Metrics (measured)
+- Kernel launch + 300 steps: 0.028s for 100K particles (L40)
+- JIT compilation (first launch): ~200ms
+- 48 tests, all passing
 
 ---
 

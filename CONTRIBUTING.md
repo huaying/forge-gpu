@@ -23,18 +23,35 @@ cargo test
 
 ```
 forge-gpu/
-├── forge/               # Top-level crate (re-exports + proc macros)
-├── forge-core/          # Types: Vec3f, Mat33f, Array<T>, etc.
-├── forge-codegen/       # AST → CUDA/PTX code generation
-├── forge-runtime/       # GPU device management, memory, dispatch
-├── forge-spatial/       # BVH, HashGrid, Mesh (future)
-├── forge-interop/       # PyTorch/JAX/DLPack (future)
-├── examples/            # Runnable examples
-├── DESIGN.md            # Architecture & design decisions
-└── ROADMAP.md           # Development milestones
+├── forge/               # Top-level crate (re-exports + prelude)
+├── forge-core/          # Math types: Vec2/3/4, Mat22/33/44, Quat, scalars
+├── forge-codegen/       # CUDA type mapping utilities
+├── forge-macros/        # #[kernel] and #[func] proc macros, Rust→CUDA emitter
+├── forge-runtime/       # CUDA context, Array<T>, kernel compilation, launch
+├── examples/            # Runnable examples (particles, kernel_demo)
+├── tests/               # Integration tests (kernel_macro_test, func_macro_test)
+├── DESIGN.md            # Architecture & design decisions (aspirational — not all implemented)
+├── ROADMAP.md           # Development milestones
+└── PROJECT_PLAN.md      # Sprint tracking
 ```
 
 ## Development Guidelines
+
+### 📏 Rule #1: Docs Must Match Code
+
+**Every commit that changes behavior must update docs in the same commit.**
+
+This means:
+- If you add a feature → update README.md "What Works Today" section
+- If you change an API → update all code examples that reference it
+- If you implement something from DESIGN.md → move it from "planned" to "implemented"
+- If you defer something → note it explicitly ("not yet implemented")
+
+**README.md is the source of truth for what works.** DESIGN.md and ROADMAP.md describe the vision (what we're building toward). Keep the distinction clear:
+- README: "this is what you can do right now"
+- DESIGN/ROADMAP: "this is where we're going"
+
+**Before every release/push, ask:** does `cargo run --example particles` match what README shows? If not, fix it.
 
 ### Code Style
 

@@ -2,6 +2,30 @@
 
 > Living document tracking progress across all milestones.
 
+## M1 Status: ✅ COMPLETE (April 12, 2026)
+
+### Sprint History
+
+| Sprint | Goal | Status | Key Deliverables |
+|--------|------|--------|-----------------|
+| Sprint 1 | CUDA wrapper + GPU memory | ✅ Done | cudarc 0.19, nvrtc JIT, Array\<T\>, L40 tested |
+| Sprint 2 | `#[kernel]` proc macro | ✅ Done | Rust→CUDA emitter, 7 tests, OnceLock caching |
+| Sprint 3 | `#[func]` + launch + demo | ✅ Done | `#[func]`, ForgeError, launch variants, GPU particles |
+
+### Issues Closed
+- #1 CUDA Driver API wrapper ✅
+- #2 GPU Memory (Array\<T\>) ✅
+- #3 `#[kernel]` proc macro ✅
+- #4 `#[func]` proc macro ✅
+- #5 Builtin math (Phase 1) ✅
+- #6 Kernel launch dispatch ✅
+- #10 Integration demo (particle sim) ✅
+
+### Issues Deferred
+- #7 Spatial types (Vec3f as kernel param) → M2
+- #8 CI/CD setup → M2
+- #9 Benchmarks (criterion) → M2
+
 ## Execution Order (M1)
 
 The dependency graph for M1 dictates build order:

@@ -1,6 +1,9 @@
 # Forge — Design Document
 
 > A Rust-native GPU compute framework designed for AI-generated code.
+>
+> **⚠️ This document describes the full vision.** Not everything here is implemented yet.
+> See [README.md](README.md) for what works today, and [ROADMAP.md](ROADMAP.md) for status.
 
 ## 1. Vision
 
