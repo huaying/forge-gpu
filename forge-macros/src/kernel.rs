@@ -258,5 +258,13 @@ fn scalar_type_tokens(type_name: &str) -> TokenStream {
 
 /// Convert an element type name to tokens.
 fn elem_type_tokens(type_name: &str) -> TokenStream {
-    scalar_type_tokens(type_name)
+    match type_name {
+        "Vec2f" | "Vec2" => quote! { forge_core::Vec2f },
+        "Vec3f" | "Vec3" => quote! { forge_core::Vec3f },
+        "Vec4f" | "Vec4" => quote! { forge_core::Vec4f },
+        "Vec2d" => quote! { forge_core::Vec2d },
+        "Vec3d" => quote! { forge_core::Vec3d },
+        "Vec4d" => quote! { forge_core::Vec4d },
+        _ => scalar_type_tokens(type_name),
+    }
 }

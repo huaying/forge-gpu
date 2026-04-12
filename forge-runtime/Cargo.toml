@@ -12,4 +12,4 @@ cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-12060"], optio
 
 [features]
 default = []
-cuda = ["dep:cudarc"]
+cuda = ["dep:cudarc", "forge-core/cuda"]

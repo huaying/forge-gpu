@@ -57,7 +57,11 @@ fn parse_type(name: &str, ty: &Type) -> Result<KernelParam, syn::Error> {
                     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
                             let elem_type = type_to_string(inner_ty);
-                            let cuda_elem = scalar_to_cuda(&elem_type)?;
+                            let cuda_elem = type_to_cuda(&elem_type)
+                                .map_err(|_| syn::Error::new_spanned(
+                                    inner_ty,
+                                    format!("unsupported Array element type '{}'", elem_type),
+                                ))?;
                             let cuda_type = if is_mutable {
                                 format!("{}*", cuda_elem)
                             } else {
@@ -120,6 +124,222 @@ fn scalar_to_cuda(type_name: &str) -> Result<&'static str, syn::Error> {
     }
 }
 
+/// Information about a Forge vector/matrix type for CUDA codegen.
+#[derive(Debug, Clone)]
+pub struct ForgeStructInfo {
+    /// CUDA struct name (e.g., "forge_vec3f")
+    pub cuda_name: &'static str,
+    /// Scalar element type in CUDA (e.g., "float")
+    pub scalar_cuda: &'static str,
+    /// Field names
+    pub fields: &'static [&'static str],
+    /// Number of components
+    pub components: usize,
+}
+
+/// Look up a known Forge type (Vec2f, Vec3f, etc.).
+pub fn forge_type_info(type_name: &str) -> Option<ForgeStructInfo> {
+    match type_name {
+        "Vec2f" | "Vec2" => Some(ForgeStructInfo {
+            cuda_name: "forge_vec2f",
+            scalar_cuda: "float",
+            fields: &["x", "y"],
+            components: 2,
+        }),
+        "Vec3f" | "Vec3" => Some(ForgeStructInfo {
+            cuda_name: "forge_vec3f",
+            scalar_cuda: "float",
+            fields: &["x", "y", "z"],
+            components: 3,
+        }),
+        "Vec4f" | "Vec4" => Some(ForgeStructInfo {
+            cuda_name: "forge_vec4f",
+            scalar_cuda: "float",
+            fields: &["x", "y", "z", "w"],
+            components: 4,
+        }),
+        "Vec2d" => Some(ForgeStructInfo {
+            cuda_name: "forge_vec2d",
+            scalar_cuda: "double",
+            fields: &["x", "y"],
+            components: 2,
+        }),
+        "Vec3d" => Some(ForgeStructInfo {
+            cuda_name: "forge_vec3d",
+            scalar_cuda: "double",
+            fields: &["x", "y", "z"],
+            components: 3,
+        }),
+        "Vec4d" => Some(ForgeStructInfo {
+            cuda_name: "forge_vec4d",
+            scalar_cuda: "double",
+            fields: &["x", "y", "z", "w"],
+            components: 4,
+        }),
+        _ => None,
+    }
+}
+
+/// Map any Forge type name (scalar or struct) to its CUDA equivalent.
+/// Returns the CUDA type name as a string.
+pub fn type_to_cuda(type_name: &str) -> Result<String, syn::Error> {
+    // Try scalar first
+    if let Ok(s) = scalar_to_cuda(type_name) {
+        return Ok(s.to_string());
+    }
+    // Try forge struct types
+    if let Some(info) = forge_type_info(type_name) {
+        return Ok(info.cuda_name.to_string());
+    }
+    Err(syn::Error::new(
+        Span::call_site(),
+        format!("unsupported type '{}' in #[kernel]", type_name),
+    ))
+}
+
+/// Generate CUDA struct definitions for all Forge types used in a kernel.
+/// Returns a string to prepend to the kernel source.
+pub fn generate_struct_preamble(params: &[KernelParam], body_stmts: &[Stmt]) -> String {
+    let mut needed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // Check params for struct types
+    for p in params {
+        if forge_type_info(&p.elem_type).is_some() {
+            needed.insert(p.elem_type.clone());
+        }
+    }
+
+    // Scan body for struct constructors like Vec3f::new(...)
+    scan_stmts_for_types(body_stmts, &mut needed);
+
+    let mut preamble = String::new();
+    for type_name in &needed {
+        if let Some(info) = forge_type_info(type_name) {
+            preamble.push_str(&format!("struct {} {{\n", info.cuda_name));
+            for &field in info.fields {
+                preamble.push_str(&format!("    {} {};\n", info.scalar_cuda, field));
+            }
+            preamble.push_str("};\n\n");
+
+            // Generate operator overloads
+            let n = info.cuda_name;
+            let s = info.scalar_cuda;
+
+            // vec + vec
+            preamble.push_str(&format!(
+                "__device__ {n} operator+({n} a, {n} b) {{ return {n}{{{}}}; }}\n",
+                info.fields.iter().map(|f| format!("a.{f} + b.{f}")).collect::<Vec<_>>().join(", ")
+            ));
+            // vec - vec
+            preamble.push_str(&format!(
+                "__device__ {n} operator-({n} a, {n} b) {{ return {n}{{{}}}; }}\n",
+                info.fields.iter().map(|f| format!("a.{f} - b.{f}")).collect::<Vec<_>>().join(", ")
+            ));
+            // vec * scalar
+            preamble.push_str(&format!(
+                "__device__ {n} operator*({n} a, {s} b) {{ return {n}{{{}}}; }}\n",
+                info.fields.iter().map(|f| format!("a.{f} * b")).collect::<Vec<_>>().join(", ")
+            ));
+            // scalar * vec
+            preamble.push_str(&format!(
+                "__device__ {n} operator*({s} a, {n} b) {{ return {n}{{{}}}; }}\n",
+                info.fields.iter().map(|f| format!("a * b.{f}")).collect::<Vec<_>>().join(", ")
+            ));
+            // vec / scalar
+            preamble.push_str(&format!(
+                "__device__ {n} operator/({n} a, {s} b) {{ return {n}{{{}}}; }}\n",
+                info.fields.iter().map(|f| format!("a.{f} / b")).collect::<Vec<_>>().join(", ")
+            ));
+            // unary negation
+            preamble.push_str(&format!(
+                "__device__ {n} operator-({n} a) {{ return {n}{{{}}}; }}\n",
+                info.fields.iter().map(|f| format!("-a.{f}")).collect::<Vec<_>>().join(", ")
+            ));
+            preamble.push('\n');
+        }
+    }
+
+    preamble
+}
+
+/// Scan statements for Forge type references (e.g., Vec3f::new(...)).
+fn scan_stmts_for_types(stmts: &[Stmt], found: &mut std::collections::BTreeSet<String>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Expr(expr, _) => scan_expr_for_types(expr, found),
+            Stmt::Local(local) => {
+                if let Some(init) = &local.init {
+                    scan_expr_for_types(&init.expr, found);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_expr_for_types(expr: &Expr, found: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        Expr::Call(ExprCall { func, args, .. }) => {
+            // Check for Type::new(...) patterns
+            if let Expr::Path(ExprPath { path, .. }) = func.as_ref() {
+                if path.segments.len() == 2 {
+                    let type_name = path.segments[0].ident.to_string();
+                    if forge_type_info(&type_name).is_some() {
+                        found.insert(type_name);
+                    }
+                }
+            }
+            for arg in args {
+                scan_expr_for_types(arg, found);
+            }
+        }
+        Expr::Binary(ExprBinary { left, right, .. }) => {
+            scan_expr_for_types(left, found);
+            scan_expr_for_types(right, found);
+        }
+        Expr::Unary(ExprUnary { expr, .. }) => scan_expr_for_types(expr, found),
+        Expr::If(ExprIf { cond, then_branch, else_branch, .. }) => {
+            scan_expr_for_types(cond, found);
+            scan_stmts_for_types(&then_branch.stmts, found);
+            if let Some((_, else_expr)) = else_branch {
+                scan_expr_for_types(else_expr, found);
+            }
+        }
+        Expr::Block(ExprBlock { block, .. }) => {
+            scan_stmts_for_types(&block.stmts, found);
+        }
+        Expr::Assign(ExprAssign { left, right, .. }) => {
+            scan_expr_for_types(left, found);
+            scan_expr_for_types(right, found);
+        }
+        Expr::Index(ExprIndex { expr, index, .. }) => {
+            scan_expr_for_types(expr, found);
+            scan_expr_for_types(index, found);
+        }
+        Expr::Field(ExprField { base, .. }) => scan_expr_for_types(base, found),
+        Expr::Paren(ExprParen { expr, .. }) => scan_expr_for_types(expr, found),
+        Expr::MethodCall(ExprMethodCall { receiver, args, .. }) => {
+            scan_expr_for_types(receiver, found);
+            for arg in args {
+                scan_expr_for_types(arg, found);
+            }
+        }
+        Expr::ForLoop(for_loop) => {
+            scan_expr_for_types(&for_loop.expr, found);
+            scan_stmts_for_types(&for_loop.body.stmts, found);
+        }
+        Expr::While(while_loop) => {
+            scan_expr_for_types(&while_loop.cond, found);
+            scan_stmts_for_types(&while_loop.body.stmts, found);
+        }
+        Expr::Return(ExprReturn { expr, .. }) => {
+            if let Some(e) = expr { scan_expr_for_types(e, found); }
+        }
+        Expr::Cast(ExprCast { expr, .. }) => scan_expr_for_types(expr, found),
+        _ => {}
+    }
+}
+
 /// Convert a syn::Type to a string representation.
 fn type_to_string(ty: &Type) -> String {
     match ty {
@@ -140,6 +360,14 @@ fn infer_cuda_type_from_expr(expr: &Expr) -> Option<&'static str> {
     match expr {
         Expr::Call(ExprCall { func, .. }) => {
             if let Expr::Path(ExprPath { path, .. }) = func.as_ref() {
+                // Check for Vec3f::new(...) etc.
+                if path.segments.len() == 2 {
+                    let type_name = path.segments[0].ident.to_string();
+                    if let Some(info) = forge_type_info(&type_name) {
+                        return Some(info.cuda_name);
+                    }
+                }
+                // Simple function calls
                 let fname = path_to_string(path);
                 match fname.as_str() {
                     "thread_id" => Some("int"),
@@ -236,6 +464,10 @@ pub fn generate_cuda_source(
     body_stmts: &[Stmt],
 ) -> Result<String, syn::Error> {
     let mut cuda = String::new();
+
+    // Generate struct definitions for any Forge types used
+    let preamble = generate_struct_preamble(params, body_stmts);
+    cuda.push_str(&preamble);
 
     // Kernel signature
     cuda.push_str("extern \"C\" __global__ void ");
@@ -363,12 +595,37 @@ fn emit_expr(expr: &Expr) -> Result<String, syn::Error> {
             Ok(format!("({}{})", op_str, e))
         }
 
-        // Function calls: thread_id(), sin(x), etc.
+        // Function calls: thread_id(), sin(x), Vec3f::new(x,y,z), etc.
         Expr::Call(ExprCall { func, args, .. }) => {
             let fname = emit_expr(func)?;
             // Special case: thread_id() expands to an expression, not a function call
             if fname == "thread_id" {
                 return Ok("(blockIdx.x * blockDim.x + threadIdx.x)".to_string());
+            }
+            // Special case: Vec3f::new(x, y, z) → forge_vec3f{x, y, z}
+            if let Expr::Path(ExprPath { path, .. }) = func.as_ref() {
+                if path.segments.len() == 2 {
+                    let type_name = path.segments[0].ident.to_string();
+                    let method = path.segments[1].ident.to_string();
+                    if let Some(info) = forge_type_info(&type_name) {
+                        if method == "new" {
+                            let arg_strs: Result<Vec<String>, _> = args.iter().map(emit_expr).collect();
+                            return Ok(format!("{}{{{}}}",
+                                info.cuda_name,
+                                arg_strs?.join(", ")
+                            ));
+                        } else if method == "zero" || method == "zeros" {
+                            let zeros = vec!["0.0f"; info.components].join(", ");
+                            return Ok(format!("{}{{{}}}", info.cuda_name, zeros));
+                        } else if method == "splat" {
+                            if let Some(arg) = args.first() {
+                                let val = emit_expr(arg)?;
+                                let vals = vec![val.as_str(); info.components].join(", ");
+                                return Ok(format!("{}{{{}}}", info.cuda_name, vals));
+                            }
+                        }
+                    }
+                }
             }
             let cuda_fname = builtin_to_cuda(&fname);
             let arg_strs: Result<Vec<String>, _> = args.iter().map(emit_expr).collect();

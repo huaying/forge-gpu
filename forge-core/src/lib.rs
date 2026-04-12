@@ -16,6 +16,8 @@ mod scalar;
 mod vec;
 mod mat;
 mod quat;
+#[cfg(feature = "cuda")]
+mod gpu_traits;
 
 pub use scalar::*;
 pub use vec::*;

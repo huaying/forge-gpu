@@ -1,21 +1,18 @@
 //! # Forge GPU Particle Simulation 🔥
 //!
 //! 100K particles under gravity with ground bounce — running on GPU.
-//! This is the M1 finish line demo.
+//! Uses `Array<Vec3f>` for clean, natural particle code.
 //!
-//! Run: `CARGO_HOME=/home/horde/.cargo cargo run --example particles`
+//! Run: `CARGO_HOME=/home/horde/.cargo cargo run --example particles --release`
 
 use forge_macros::kernel;
+use forge_core::Vec3f;
 use forge_runtime::{cuda, Array, Device};
 
 #[kernel]
 fn integrate(
-    pos_x: &mut Array<f32>,
-    pos_y: &mut Array<f32>,
-    pos_z: &mut Array<f32>,
-    vel_x: &mut Array<f32>,
-    vel_y: &mut Array<f32>,
-    vel_z: &mut Array<f32>,
+    pos: &mut Array<Vec3f>,
+    vel: &mut Array<Vec3f>,
     dt: f32,
     gravity: f32,
     ground_y: f32,
@@ -25,17 +22,21 @@ fn integrate(
     let tid = thread_id();
     if tid < n {
         // Apply gravity
-        vel_y[tid] = vel_y[tid] + gravity * dt;
+        vel[tid] = vel[tid] + Vec3f::new(0.0, gravity * dt, 0.0);
 
         // Integrate position
-        pos_x[tid] = pos_x[tid] + vel_x[tid] * dt;
-        pos_y[tid] = pos_y[tid] + vel_y[tid] * dt;
-        pos_z[tid] = pos_z[tid] + vel_z[tid] * dt;
+        pos[tid] = pos[tid] + vel[tid] * dt;
 
-        // Ground collision
-        if pos_y[tid] < ground_y {
-            pos_y[tid] = ground_y;
-            vel_y[tid] = vel_y[tid] * restitution * -1.0;
+        // Ground collision (check y component)
+        if pos[tid].y < ground_y {
+            // Reset y to ground, flip y velocity
+            let px = pos[tid].x;
+            let pz = pos[tid].z;
+            pos[tid] = Vec3f::new(px, ground_y, pz);
+            let vx = vel[tid].x;
+            let vy = vel[tid].y;
+            let vz = vel[tid].z;
+            vel[tid] = Vec3f::new(vx, vy * restitution * -1.0, vz);
         }
     }
 }
@@ -52,7 +53,7 @@ fn main() {
     let steps = 300;
 
     // ----- GPU simulation -----
-    println!("⚡ GPU Mode (CUDA)");
+    println!("⚡ GPU Mode (CUDA) — using Array<Vec3f>");
     cuda::init();
     let gpu_count = cuda::device_count();
     if gpu_count == 0 {
@@ -61,27 +62,24 @@ fn main() {
         println!("  Device count: {}", gpu_count);
 
         // Init positions: spread in XZ plane, Y = 5..25
-        let px: Vec<f32> = (0..n).map(|i| ((i * 7) % 200) as f32 / 10.0 - 10.0).collect();
-        let py: Vec<f32> = (0..n).map(|i| (i % 200) as f32 / 10.0 + 5.0).collect();
-        let pz: Vec<f32> = (0..n).map(|i| ((i * 13) % 200) as f32 / 10.0 - 10.0).collect();
+        let pos_data: Vec<Vec3f> = (0..n)
+            .map(|i| Vec3f::new(
+                ((i * 7) % 200) as f32 / 10.0 - 10.0,
+                (i % 200) as f32 / 10.0 + 5.0,
+                ((i * 13) % 200) as f32 / 10.0 - 10.0,
+            ))
+            .collect();
+        let vel_data = vec![Vec3f::new(0.0, 0.0, 0.0); n];
 
-        let mut pos_x = Array::from_vec(px, Device::Cuda(0));
-        let mut pos_y = Array::from_vec(py, Device::Cuda(0));
-        let mut pos_z = Array::from_vec(pz, Device::Cuda(0));
-        let mut vel_x = Array::<f32>::zeros(n, Device::Cuda(0));
-        let mut vel_y = Array::<f32>::zeros(n, Device::Cuda(0));
-        let mut vel_z = Array::<f32>::zeros(n, Device::Cuda(0));
+        let mut pos = Array::from_vec(pos_data, Device::Cuda(0));
+        let mut vel = Array::from_vec(vel_data, Device::Cuda(0));
 
         let start = std::time::Instant::now();
 
         for _ in 0..steps {
             integrate::launch_async(
-                &mut pos_x,
-                &mut pos_y,
-                &mut pos_z,
-                &mut vel_x,
-                &mut vel_y,
-                &mut vel_z,
+                &mut pos,
+                &mut vel,
                 dt,
                 gravity,
                 ground_y,
@@ -103,22 +101,19 @@ fn main() {
         println!("  Throughput: {:.2e} particle-steps/s", gpu_throughput);
 
         // Verify
-        let final_y = pos_y.to_vec();
-        let below_ground = final_y.iter().filter(|&&y| y < ground_y - 0.001).count();
+        let final_pos = pos.to_vec();
+        let below_ground = final_pos.iter().filter(|p| p.y < ground_y - 0.001).count();
         println!(
             "  Verify    : {} particles below ground (should be 0)",
             below_ground
         );
 
-        // Show sample
-        let fy = pos_y.to_vec();
-        let fx = pos_x.to_vec();
-        let fz = pos_z.to_vec();
         println!("\n  Sample particles:");
         for i in 0..5 {
+            let p = final_pos[i];
             println!(
                 "    #{}: ({:+.2}, {:+.2}, {:+.2})",
-                i, fx[i], fy[i], fz[i]
+                i, p.x, p.y, p.z
             );
         }
         println!();
@@ -127,24 +122,24 @@ fn main() {
     // ----- CPU simulation for comparison -----
     println!("🐢 CPU Mode (single-threaded)");
 
-    let mut cpu_px: Vec<f32> = (0..n).map(|i| ((i * 7) % 200) as f32 / 10.0 - 10.0).collect();
-    let mut cpu_py: Vec<f32> = (0..n).map(|i| (i % 200) as f32 / 10.0 + 5.0).collect();
-    let mut cpu_pz: Vec<f32> = (0..n).map(|i| ((i * 13) % 200) as f32 / 10.0 - 10.0).collect();
-    let cpu_vx: Vec<f32> = vec![0.0; n];
-    let mut cpu_vy: Vec<f32> = vec![0.0; n];
-    let cpu_vz: Vec<f32> = vec![0.0; n];
+    let mut cpu_pos: Vec<Vec3f> = (0..n)
+        .map(|i| Vec3f::new(
+            ((i * 7) % 200) as f32 / 10.0 - 10.0,
+            (i % 200) as f32 / 10.0 + 5.0,
+            ((i * 13) % 200) as f32 / 10.0 - 10.0,
+        ))
+        .collect();
+    let mut cpu_vel = vec![Vec3f::new(0.0, 0.0, 0.0); n];
 
     let start = std::time::Instant::now();
 
     for _ in 0..steps {
         for i in 0..n {
-            cpu_vy[i] += gravity * dt;
-            cpu_px[i] += cpu_vx[i] * dt;
-            cpu_py[i] += cpu_vy[i] * dt;
-            cpu_pz[i] += cpu_vz[i] * dt;
-            if cpu_py[i] < ground_y {
-                cpu_py[i] = ground_y;
-                cpu_vy[i] = -cpu_vy[i] * restitution;
+            cpu_vel[i] = cpu_vel[i] + Vec3f::new(0.0, gravity * dt, 0.0);
+            cpu_pos[i] = cpu_pos[i] + cpu_vel[i] * dt;
+            if cpu_pos[i].y < ground_y {
+                cpu_pos[i] = Vec3f::new(cpu_pos[i].x, ground_y, cpu_pos[i].z);
+                cpu_vel[i] = Vec3f::new(cpu_vel[i].x, -cpu_vel[i].y * restitution, cpu_vel[i].z);
             }
         }
     }
@@ -159,56 +154,41 @@ fn main() {
 
     println!("\n  Sample particles:");
     for i in 0..5 {
+        let p = cpu_pos[i];
         println!(
             "    #{}: ({:+.2}, {:+.2}, {:+.2})",
-            i, cpu_px[i], cpu_py[i], cpu_pz[i]
+            i, p.x, p.y, p.z
         );
     }
 
     // ----- Comparison -----
     if gpu_count > 0 {
         println!("\n📊 Comparison");
-        let gpu_elapsed = {
-            // Re-run GPU to get timing (use the already-compiled kernel)
-            let px: Vec<f32> = (0..n).map(|i| ((i * 7) % 200) as f32 / 10.0 - 10.0).collect();
-            let py: Vec<f32> = (0..n).map(|i| (i % 200) as f32 / 10.0 + 5.0).collect();
-            let pz: Vec<f32> = (0..n).map(|i| ((i * 13) % 200) as f32 / 10.0 - 10.0).collect();
 
-            let mut pos_x = Array::from_vec(px, Device::Cuda(0));
-            let mut pos_y = Array::from_vec(py, Device::Cuda(0));
-            let mut pos_z = Array::from_vec(pz, Device::Cuda(0));
-            let mut vel_x = Array::<f32>::zeros(n, Device::Cuda(0));
-            let mut vel_y = Array::<f32>::zeros(n, Device::Cuda(0));
-            let mut vel_z = Array::<f32>::zeros(n, Device::Cuda(0));
+        // Re-run GPU for warm comparison
+        let pos_data: Vec<Vec3f> = (0..n)
+            .map(|i| Vec3f::new(
+                ((i * 7) % 200) as f32 / 10.0 - 10.0,
+                (i % 200) as f32 / 10.0 + 5.0,
+                ((i * 13) % 200) as f32 / 10.0 - 10.0,
+            ))
+            .collect();
+        let vel_data = vec![Vec3f::new(0.0, 0.0, 0.0); n];
+        let mut pos = Array::from_vec(pos_data, Device::Cuda(0));
+        let mut vel = Array::from_vec(vel_data, Device::Cuda(0));
 
-            let start = std::time::Instant::now();
-            for _ in 0..steps {
-                integrate::launch_async(
-                    &mut pos_x,
-                    &mut pos_y,
-                    &mut pos_z,
-                    &mut vel_x,
-                    &mut vel_y,
-                    &mut vel_z,
-                    dt,
-                    gravity,
-                    ground_y,
-                    restitution,
-                    n as i32,
-                    n,
-                    0,
-                )
-                .expect("kernel launch failed");
-            }
-            cuda::synchronize(0);
-            start.elapsed()
-        };
+        let start = std::time::Instant::now();
+        for _ in 0..steps {
+            integrate::launch_async(
+                &mut pos, &mut vel,
+                dt, gravity, ground_y, restitution, n as i32, n, 0,
+            ).expect("kernel launch failed");
+        }
+        cuda::synchronize(0);
+        let gpu_elapsed = start.elapsed();
 
         let speedup = cpu_elapsed.as_secs_f64() / gpu_elapsed.as_secs_f64();
-        println!(
-            "  GPU is {:.0}x faster than single-threaded CPU",
-            speedup
-        );
+        println!("  GPU is {:.0}x faster than single-threaded CPU", speedup);
     }
 
     println!("\n🏁 Done.");

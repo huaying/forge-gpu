@@ -20,25 +20,34 @@ Forge is a GPU compute framework that brings Rust's compile-time safety guarante
 
 ```rust
 use forge_macros::kernel;
+use forge_core::Vec3f;
 use forge_runtime::{Array, Device, cuda};
 
 #[kernel]
-fn add_one(data: &mut Array<f32>, n: i32) {
-    let i = thread_id();
-    if i < n {
-        data[i] += 1.0;
+fn integrate(
+    pos: &mut Array<Vec3f>,
+    vel: &mut Array<Vec3f>,
+    dt: f32,
+    gravity: f32,
+    n: i32,
+) {
+    let tid = thread_id();
+    if tid < n {
+        vel[tid] = vel[tid] + Vec3f::new(0.0, gravity * dt, 0.0);
+        pos[tid] = pos[tid] + vel[tid] * dt;
     }
 }
 
 fn main() {
     cuda::init();
     let n = 100_000;
-    let mut data = Array::<f32>::zeros(n, Device::Cuda(0));
+    let mut pos = Array::from_vec(vec![Vec3f::new(0.0, 10.0, 0.0); n], Device::Cuda(0));
+    let mut vel = Array::from_vec(vec![Vec3f::zero(); n], Device::Cuda(0));
 
-    add_one::launch(&mut data, n as i32, n, 0).unwrap();
+    integrate::launch(&mut pos, &mut vel, 1.0/60.0, -9.81, n as i32, n, 0).unwrap();
 
-    let result = data.to_vec();
-    assert!((result[0] - 1.0).abs() < 1e-6);
+    let result = pos.to_vec();
+    println!("pos[0] = {:?}", result[0]); // particles falling under gravity
 }
 ```
 
@@ -123,8 +132,12 @@ fn main() {
 
 **Supported in kernels:**
 - Scalar types: `f32`, `f64`, `i32`, `u32`, `i64`, `u64`, `bool`
-- Array params: `&Array<T>` (read-only), `&mut Array<T>` (read-write)
+- **Vector types: `Vec2f`, `Vec3f`, `Vec4f`, `Vec2d`, `Vec3d`, `Vec4d`** — as array elements and in expressions
+- Array params: `&Array<T>` (read-only), `&mut Array<T>` (read-write) — T can be scalar or Vec type
 - `thread_id()` → CUDA thread index
+- Vec constructors: `Vec3f::new(x, y, z)`, `Vec3f::zero()`, `Vec3f::splat(v)`
+- Vec field access: `v.x`, `v.y`, `v.z`
+- Vec arithmetic: `+`, `-`, `*` (scalar), `/` (scalar), negation
 - Math ops: `+`, `-`, `*`, `/`, `%`, comparisons, compound assignment (`+=`, etc.)
 - Control flow: `if`/`else`, `for` (range-based), `while`
 - Builtins: `sin`, `cos`, `sqrt`, `abs`, `min`, `max`, `floor`, `ceil`, `round`, `exp`, `log`, `pow`, `atan2`
@@ -221,7 +234,6 @@ GPU particle simulation (100K particles, 300 timesteps, L40 GPU):
 
 These are in the [DESIGN.md](DESIGN.md) and [ROADMAP.md](ROADMAP.md) but **not yet in code**:
 
-- ❌ `Array<Vec3f>` as kernel parameter (custom struct codegen)
 - ❌ Method-style launch (`kernel.launch(...)` — currently `kernel::launch(...)`)
 - ❌ Autodiff / `Tape` / adjoint generation
 - ❌ Spatial queries (BVH, HashGrid, Mesh)
@@ -243,7 +255,7 @@ These are in the [DESIGN.md](DESIGN.md) and [ROADMAP.md](ROADMAP.md) but **not y
 | Error detection | Runtime | **Compile time** |
 | Memory safety | GC | **Ownership (borrow checker)** |
 | Mutability | Any array writable | **`&` vs `&mut` enforced** |
-| Kernel types | Scalars + vec/mat + structs | Scalars only (vec/mat planned) |
+| Kernel types | Scalars + vec/mat + structs | **Scalars + Vec2/3/4** (custom structs planned) |
 | Device functions | `@wp.func` | `#[func]` ✅ |
 | Autodiff | ✅ Runtime tape | ❌ Not yet |
 | Spatial queries | ✅ BVH, HashGrid, Mesh | ❌ Not yet |
