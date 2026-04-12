@@ -1,0 +1,15 @@
+[package]
+name = "forge-manifest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Declarative TOML-based simulation manifests for Forge"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-runtime = { path = "../forge-runtime", features = ["cuda"] }
+forge-macros = { path = "../forge-macros" }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+rand = "0.8"

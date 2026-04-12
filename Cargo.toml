@@ -5,6 +5,7 @@ members = [
     "forge-codegen",
     "forge-macros",
     "forge-runtime",
+    "forge-manifest",
 ]
 resolver = "2"
 

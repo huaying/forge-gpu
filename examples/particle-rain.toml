@@ -1,0 +1,30 @@
+# Particle Rain — 100K particles falling under gravity
+# Run: forge run examples/particle-rain.toml
+
+[simulation]
+name = "particle-rain"
+type = "particles"
+dt = 0.001
+substeps = 4
+duration = 3.0
+count = 100000
+
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 100000
+init = { type = "random", min = [-5.0, 10.0, -5.0], max = [5.0, 20.0, 5.0] }
+
+[[fields]]
+name = "velocity"
+type = "vec3f"
+init = { type = "zero" }
+
+[[forces]]
+type = "gravity"
+value = [0.0, -9.81, 0.0]
+
+[[constraints]]
+type = "ground_plane"
+y = 0.0
+restitution = 0.7
