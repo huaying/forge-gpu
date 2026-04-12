@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use crate::cuda_emit::{generate_cuda_source, generate_struct_preamble, parse_param, KernelParam};
 use crate::autodiff::generate_adjoint_body;
-use crate::autodiff_parse::parse_stmts_to_ops;
+use crate::autodiff_parse::{parse_stmts_to_ops, parse_stmts_to_ops_with_types};
 use crate::kernel::{build_launch_params, build_launch_arg_names, build_launch_arg_pushes};
 
 /// Generate both forward and adjoint kernels from `#[kernel(autodiff)]`.
@@ -41,8 +41,18 @@ pub fn expand_kernel_autodiff(input: TokenStream) -> Result<TokenStream, syn::Er
         .map(|p| p.name.clone())
         .collect();
 
-    // Parse forward body into IR
-    let forward_ops = parse_stmts_to_ops(&func.block.stmts);
+    // Parse forward body into IR with type information
+    let mut param_type_map = std::collections::HashMap::new();
+    for p in &params {
+        let cuda_type = if p.is_array {
+            // For arrays, the "type" in context is the element type
+            crate::cuda_emit::type_to_cuda(&p.elem_type).unwrap_or("float".to_string())
+        } else {
+            crate::cuda_emit::type_to_cuda(&p.elem_type).unwrap_or("float".to_string())
+        };
+        param_type_map.insert(p.name.clone(), cuda_type);
+    }
+    let forward_ops = parse_stmts_to_ops_with_types(&func.block.stmts, &param_type_map);
 
     // Generate adjoint body
     let adj_lines = generate_adjoint_body(&forward_ops, &output_arrays, &input_arrays);
@@ -82,11 +92,12 @@ pub fn expand_kernel_autodiff(input: TokenStream) -> Result<TokenStream, syn::Er
     // Declare adj_ locals for all SSA vars and named vars (deduplicated)
     let mut declared_adj: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Declare adj_ for scalar params (they accumulate gradients but don't write back)
+    // Declare adj_ for scalar params
     for p in &params {
         if !p.is_array {
             declared_adj.insert(p.name.clone());
-            adj_cuda.push_str(&format!("    float adj_{} = 0.0f;\n", p.name));
+            let cuda_type = crate::cuda_emit::type_to_cuda(&p.elem_type).unwrap_or("float".to_string());
+            adj_cuda.push_str(&format!("    {} adj_{} = 0.0f;\n", cuda_type, p.name));
         }
     }
 
@@ -247,15 +258,6 @@ pub fn expand_kernel_autodiff(input: TokenStream) -> Result<TokenStream, syn::Er
     Ok(expanded)
 }
 
-fn collect_local_names(ops: &[crate::autodiff::ForwardOp]) -> Vec<String> {
-    let mut names = Vec::new();
-    for op in ops {
-        if let Some(var) = get_forward_var(op) {
-            names.push(var.to_string());
-        }
-    }
-    names
-}
 
 /// Recursively declare adj_ variables for all forward ops (including those inside if blocks).
 fn declare_adj_vars_recursive(
@@ -273,11 +275,13 @@ fn declare_adj_vars_recursive(
             _ => {
                 if let Some(var) = get_forward_var(op) {
                     if declared.insert(var.to_string()) {
-                        if !matches!(op, ForwardOp::ThreadId { .. }) {
-                            let is_cond = matches!(op, ForwardOp::Literal { cuda_type, .. } if cuda_type == "bool");
-                            if !is_cond {
-                                cuda.push_str(&format!("    float adj_{} = 0.0f;\n", var));
-                            }
+                        let ty = get_forward_type(op);
+                        if ty == "bool" || ty == "int" {
+                            // No adj for bools or ints
+                        } else if ty.starts_with("forge_vec") {
+                            cuda.push_str(&format!("    {} adj_{} = {{}};\n", ty, var));
+                        } else {
+                            cuda.push_str(&format!("    float adj_{} = 0.0f;\n", var));
                         }
                     }
                 }
@@ -289,14 +293,26 @@ fn declare_adj_vars_recursive(
 fn get_forward_var(op: &crate::autodiff::ForwardOp) -> Option<&str> {
     use crate::autodiff::ForwardOp;
     match op {
-        ForwardOp::ThreadId { var } => Some(var),
-        ForwardOp::Literal { var, .. } => Some(var),
-        ForwardOp::BinOp { var, .. } => Some(var),
-        ForwardOp::UnaryFunc { var, .. } => Some(var),
-        ForwardOp::ArrayRead { var, .. } => Some(var),
-        ForwardOp::FieldAccess { var, .. } => Some(var),
-        ForwardOp::Assign { var, .. } => Some(var),
+        ForwardOp::ThreadId { var } | ForwardOp::Literal { var, .. } |
+        ForwardOp::BinOp { var, .. } | ForwardOp::UnaryFunc { var, .. } |
+        ForwardOp::ArrayRead { var, .. } | ForwardOp::FieldAccess { var, .. } |
+        ForwardOp::Assign { var, .. } | ForwardOp::VecConstruct { var, .. } => Some(var),
         _ => None,
+    }
+}
+
+fn get_forward_type(op: &crate::autodiff::ForwardOp) -> String {
+    use crate::autodiff::ForwardOp;
+    match op {
+        ForwardOp::ThreadId { .. } => "int".to_string(),
+        ForwardOp::Literal { cuda_type, .. } => cuda_type.clone(),
+        ForwardOp::BinOp { result_type, .. } => result_type.clone(),
+        ForwardOp::UnaryFunc { result_type, .. } => result_type.clone(),
+        ForwardOp::ArrayRead { elem_type, .. } => elem_type.clone(),
+        ForwardOp::FieldAccess { .. } => "float".to_string(),
+        ForwardOp::Assign { value_type, .. } => value_type.clone(),
+        ForwardOp::VecConstruct { vec_type, .. } => vec_type.clone(),
+        _ => "float".to_string(),
     }
 }
 
@@ -320,22 +336,46 @@ fn declare_forward_vars_recursive(
             }
             ForwardOp::Literal { var, cuda_type, .. } => {
                 if declared.insert(format!("fwd_{}", var)) {
-                    if cuda_type != "bool" {
-                        cuda.push_str(&format!("    {} {} = 0;\n", cuda_type, var));
+                    cuda.push_str(&format!("    {} {} = {{}};\n", cuda_type, var));
+                }
+            }
+            ForwardOp::BinOp { var, result_type, .. } | ForwardOp::UnaryFunc { var, result_type, .. } => {
+                if declared.insert(format!("fwd_{}", var)) {
+                    if result_type.starts_with("forge_vec") {
+                        cuda.push_str(&format!("    {} {} = {{}};\n", result_type, var));
                     } else {
-                        cuda.push_str(&format!("    bool {} = false;\n", var));
+                        cuda.push_str(&format!("    float {} = 0.0f;\n", var));
                     }
                 }
             }
-            ForwardOp::BinOp { var, .. } | ForwardOp::UnaryFunc { var, .. } |
-            ForwardOp::ArrayRead { var, .. } | ForwardOp::FieldAccess { var, .. } => {
+            ForwardOp::ArrayRead { var, elem_type, .. } => {
+                if declared.insert(format!("fwd_{}", var)) {
+                    if elem_type.starts_with("forge_vec") {
+                        cuda.push_str(&format!("    {} {} = {{}};\n", elem_type, var));
+                    } else {
+                        cuda.push_str(&format!("    float {} = 0.0f;\n", var));
+                    }
+                }
+            }
+            ForwardOp::FieldAccess { var, .. } => {
                 if declared.insert(format!("fwd_{}", var)) {
                     cuda.push_str(&format!("    float {} = 0.0f;\n", var));
                 }
             }
-            ForwardOp::Assign { var, .. } => {
+            ForwardOp::Assign { var, value_type, .. } => {
                 if declared.insert(format!("fwd_{}", var)) {
-                    cuda.push_str(&format!("    float {} = 0.0f;\n", var));
+                    if value_type == "int" {
+                        cuda.push_str(&format!("    int {} = 0;\n", var));
+                    } else if value_type.starts_with("forge_vec") {
+                        cuda.push_str(&format!("    {} {} = {{}};\n", value_type, var));
+                    } else {
+                        cuda.push_str(&format!("    float {} = 0.0f;\n", var));
+                    }
+                }
+            }
+            ForwardOp::VecConstruct { var, vec_type, .. } => {
+                if declared.insert(format!("fwd_{}", var)) {
+                    cuda.push_str(&format!("    {} {} = {{}};\n", vec_type, var));
                 }
             }
             _ => {}
@@ -349,26 +389,29 @@ fn forward_op_to_cuda_assign_only(op: &crate::autodiff::ForwardOp) -> String {
     match op {
         ForwardOp::ThreadId { var } => format!("{} = blockIdx.x * blockDim.x + threadIdx.x;", var),
         ForwardOp::Literal { var, value, .. } => format!("{} = {};", var, value),
-        ForwardOp::BinOp { var, left, op, right } => {
+        ForwardOp::BinOp { var, left, op, right, .. } => {
             format!("{} = ({} {} {});", var, left, op.as_str(), right)
         }
-        ForwardOp::UnaryFunc { var, func, arg } => {
+        ForwardOp::UnaryFunc { var, func, arg, .. } => {
             format!("{} = {}({});", var, func, arg)
         }
-        ForwardOp::ArrayRead { var, array, index } => {
+        ForwardOp::ArrayRead { var, array, index, .. } => {
             format!("{} = {}[{}];", var, array, index)
         }
-        ForwardOp::ArrayWrite { array, index, value } => {
+        ForwardOp::ArrayWrite { array, index, value, .. } => {
             format!("{}[{}] = {};", array, index, value)
         }
-        ForwardOp::ArrayCompound { array, index, op, value } => {
+        ForwardOp::ArrayCompound { array, index, op, value, .. } => {
             format!("{}[{}] {}= {};", array, index, op.as_str(), value)
         }
-        ForwardOp::FieldAccess { var, base, field } => {
+        ForwardOp::FieldAccess { var, base, field, .. } => {
             format!("{} = {}.{};", var, base, field)
         }
-        ForwardOp::Assign { var, value } => {
+        ForwardOp::Assign { var, value, .. } => {
             format!("{} = {};", var, value)
+        }
+        ForwardOp::VecConstruct { var, vec_type, args } => {
+            format!("{} = {}{{{}}};", var, vec_type, args.join(", "))
         }
         ForwardOp::IfBlock { cond, then_ops, else_ops } => {
             let mut s = format!("if ({}) {{\n", cond);
@@ -379,50 +422,6 @@ fn forward_op_to_cuda_assign_only(op: &crate::autodiff::ForwardOp) -> String {
                 s.push_str("    } else {\n");
                 for op in else_ops {
                     s.push_str(&format!("        {}\n", forward_op_to_cuda_assign_only(op)));
-                }
-            }
-            s.push_str("    }");
-            s
-        }
-    }
-}
-
-/// Generate a CUDA line for a forward op (for the recompute pass in adjoint).
-fn forward_op_to_cuda(op: &crate::autodiff::ForwardOp) -> String {
-    use crate::autodiff::ForwardOp;
-    match op {
-        ForwardOp::ThreadId { var } => format!("int {} = blockIdx.x * blockDim.x + threadIdx.x;", var),
-        ForwardOp::Literal { var, value, cuda_type } => format!("{} {} = {};", cuda_type, var, value),
-        ForwardOp::BinOp { var, left, op, right } => {
-            format!("float {} = ({} {} {});", var, left, op.as_str(), right)
-        }
-        ForwardOp::UnaryFunc { var, func, arg } => {
-            format!("float {} = {}({});", var, func, arg)
-        }
-        ForwardOp::ArrayRead { var, array, index } => {
-            format!("float {} = {}[{}];", var, array, index)
-        }
-        ForwardOp::ArrayWrite { array, index, value } => {
-            format!("{}[{}] = {};", array, index, value)
-        }
-        ForwardOp::ArrayCompound { array, index, op, value } => {
-            format!("{}[{}] {}= {};", array, index, op.as_str(), value)
-        }
-        ForwardOp::FieldAccess { var, base, field } => {
-            format!("float {} = {}.{};", var, base, field)
-        }
-        ForwardOp::Assign { var, value } => {
-            format!("float {} = {};", var, value)
-        }
-        ForwardOp::IfBlock { cond, then_ops, else_ops } => {
-            let mut s = format!("if ({}) {{\n", cond);
-            for op in then_ops {
-                s.push_str(&format!("        {}\n", forward_op_to_cuda(op)));
-            }
-            if !else_ops.is_empty() {
-                s.push_str("    } else {\n");
-                for op in else_ops {
-                    s.push_str(&format!("        {}\n", forward_op_to_cuda(op)));
                 }
             }
             s.push_str("    }");
