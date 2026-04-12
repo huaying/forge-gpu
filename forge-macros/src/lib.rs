@@ -8,9 +8,12 @@
 
 extern crate proc_macro;
 
+mod autodiff;
+mod autodiff_parse;
 mod cuda_emit;
 mod func;
 mod kernel;
+mod kernel_autodiff;
 
 use proc_macro::TokenStream;
 
@@ -48,10 +51,17 @@ use proc_macro::TokenStream;
 /// - Control flow: `if`/`else`, `for`, `while`
 /// - Builtins: `sin`, `cos`, `sqrt`, `abs`, `min`, `max`
 #[proc_macro_attribute]
-pub fn kernel(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    kernel::expand_kernel(item.into())
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
+pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr_str = attr.to_string();
+    if attr_str.contains("autodiff") {
+        kernel_autodiff::expand_kernel_autodiff(item.into())
+            .unwrap_or_else(|e| e.to_compile_error())
+            .into()
+    } else {
+        kernel::expand_kernel(item.into())
+            .unwrap_or_else(|e| e.to_compile_error())
+            .into()
+    }
 }
 
 /// Mark a function as a GPU device function callable from kernels.

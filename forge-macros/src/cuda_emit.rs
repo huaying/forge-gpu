@@ -883,6 +883,11 @@ fn binop_to_cuda(op: &BinOp) -> &'static str {
     }
 }
 
+/// Public version of builtin_to_cuda for use by autodiff module.
+pub fn builtin_to_cuda_pub(name: &str) -> String {
+    builtin_to_cuda(name)
+}
+
 /// Map Rust builtin function names to CUDA equivalents.
 fn builtin_to_cuda(name: &str) -> String {
     match name {

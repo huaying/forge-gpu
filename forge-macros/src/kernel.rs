@@ -175,7 +175,7 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
 }
 
 /// Build the launch function parameter list (Rust types).
-fn build_launch_params(params: &[KernelParam]) -> Vec<TokenStream> {
+pub(crate) fn build_launch_params(params: &[KernelParam]) -> Vec<TokenStream> {
     params
         .iter()
         .map(|p| {
@@ -197,7 +197,7 @@ fn build_launch_params(params: &[KernelParam]) -> Vec<TokenStream> {
 }
 
 /// Build just the argument names for forwarding calls.
-fn build_launch_arg_names(params: &[KernelParam]) -> Vec<TokenStream> {
+pub(crate) fn build_launch_arg_names(params: &[KernelParam]) -> Vec<TokenStream> {
     params
         .iter()
         .map(|p| {
@@ -208,7 +208,7 @@ fn build_launch_arg_names(params: &[KernelParam]) -> Vec<TokenStream> {
 }
 
 /// Build the `.arg()` calls for the launch builder.
-fn build_launch_arg_pushes(params: &[KernelParam]) -> Vec<TokenStream> {
+pub(crate) fn build_launch_arg_pushes(params: &[KernelParam]) -> Vec<TokenStream> {
     params
         .iter()
         .map(|p| {
@@ -236,6 +236,16 @@ fn build_launch_arg_pushes(params: &[KernelParam]) -> Vec<TokenStream> {
             }
         })
         .collect()
+}
+
+/// Public wrapper for scalar_type_tokens.
+pub(crate) fn scalar_type_tokens_pub(type_name: &str) -> TokenStream {
+    scalar_type_tokens(type_name)
+}
+
+/// Public wrapper for elem_type_tokens.
+pub(crate) fn elem_type_tokens_pub(type_name: &str) -> TokenStream {
+    elem_type_tokens(type_name)
 }
 
 /// Convert a scalar type name to a token for use in generated code.
