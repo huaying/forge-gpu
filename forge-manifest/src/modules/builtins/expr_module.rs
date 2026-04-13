@@ -110,7 +110,7 @@ impl SimModule for ExprModule {
             }
         }
 
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+
         Ok(())
     }
 }

@@ -59,7 +59,9 @@ pub fn synchronize(ordinal: usize) {
 /// Public re-export for advanced usage.
 pub use cudarc::driver::safe::{
     CudaFunction, CudaModule, CudaSlice, CudaView, CudaViewMut, LaunchConfig, LaunchArgs,
+    CudaGraph,
 };
+pub use cudarc::driver::sys::{CUstreamCaptureMode, CUgraphInstantiate_flags};
 pub use cudarc::driver::{DevicePtr, DevicePtrMut, DeviceRepr, DeviceSlice, PushKernelArg};
 pub use cudarc::nvrtc::Ptx;
 

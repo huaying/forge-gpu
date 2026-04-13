@@ -1,0 +1,60 @@
+# Tsunami Clash — 500K water particles, two columns colliding
+# Stress test: 10x dam-break, dual water masses slamming together
+# Run: forge run examples/tsunami-clash.toml --serve 8080
+
+[simulation]
+name = "tsunami-clash"
+type = "particles"
+dt = 0.0001
+substeps = 10
+duration = 3.0
+count = 500000
+
+# Left water column (250K) — tall pillar on the left
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 250000
+init = { type = "random", min = [-2.0, 0.0, -0.5], max = [-0.5, 3.0, 0.5] }
+
+# Right water column (250K) — tall pillar on the right
+[[fields]]
+name = "position2"
+type = "vec3f"
+count = 250000
+init = { type = "random", min = [0.5, 0.0, -0.5], max = [2.0, 3.0, 0.5] }
+
+[[fields]]
+name = "velocity"
+type = "vec3f"
+init = { type = "zero" }
+
+[spatial]
+type = "hashgrid"
+cell_size = 0.04
+grid_dims = [125, 100, 40]
+
+# SPH — tighter smoothing for 500K
+[[forces]]
+type = "sph_density"
+smoothing_radius = 0.02
+
+[[forces]]
+type = "sph_pressure"
+gas_constant = 2000.0
+rest_density = 1000.0
+
+[[forces]]
+type = "sph_viscosity"
+coefficient = 0.008
+
+[[forces]]
+type = "gravity"
+value = [0.0, -9.81, 0.0]
+
+# Big container
+[[constraints]]
+type = "box"
+min = [-2.5, 0.0, -1.0]
+max = [2.5, 5.0, 1.0]
+restitution = 0.2

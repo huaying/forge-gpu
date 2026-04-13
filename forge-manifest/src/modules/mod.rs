@@ -86,11 +86,20 @@ impl Pipeline {
         self.modules.push(module);
     }
 
-    /// Execute all modules in order.
-    pub fn step(&self, fields: &mut FieldSet, dt: f32) -> Result<(), ForgeError> {
+    /// Execute all modules without final sync (for graph capture or batched steps).
+    pub fn step_async(&self, fields: &mut FieldSet, dt: f32) -> Result<(), ForgeError> {
         for module in &self.modules {
             module.execute(fields, dt)?;
         }
+        Ok(())
+    }
+
+    /// Execute all modules in order, then sync GPU.
+    pub fn step(&self, fields: &mut FieldSet, dt: f32) -> Result<(), ForgeError> {
+        self.step_async(fields, dt)?;
+        // Single sync at end of step — all kernels on default stream are ordered
+        let stream = forge_runtime::cuda::default_stream(0);
+        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
         Ok(())
     }
 

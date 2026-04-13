@@ -156,7 +156,7 @@ impl SimModule for SphPressureModule {
             b.arg(&n_i32);
             b.launch(config).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+
         Ok(())
     }
 }

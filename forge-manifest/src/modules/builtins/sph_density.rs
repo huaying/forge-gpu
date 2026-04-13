@@ -376,7 +376,7 @@ extern "C" __global__ void prefix_sum_fixup(
             b.arg(&n_i32);
             b.launch(config_n).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+
 
         Ok(())
     }
@@ -496,7 +496,7 @@ impl SimModule for SphDensityModule {
             b.arg(&n_i32);
             b.launch(config).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+
         Ok(())
     }
 }

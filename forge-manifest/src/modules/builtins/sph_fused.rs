@@ -60,6 +60,17 @@ impl SphFusedModule {
             fields.u32_fields.insert("cell_offset".to_string(),
                 forge_runtime::Array::<u32>::zeros(num_cells, device));
         }
+        // Pre-allocate prefix sum temp buffers
+        let block_elems = 1024usize;
+        let num_blocks_psum = (num_cells + block_elems - 1) / block_elems;
+        if !fields.u32_fields.contains_key("_psum_block_sums") {
+            fields.u32_fields.insert("_psum_block_sums".to_string(),
+                forge_runtime::Array::<u32>::zeros(num_blocks_psum.max(1), device));
+            fields.u32_fields.insert("_psum_block_sums_scanned".to_string(),
+                forge_runtime::Array::<u32>::zeros(num_blocks_psum.max(1), device));
+            fields.u32_fields.insert("_psum_dummy".to_string(),
+                forge_runtime::Array::<u32>::zeros(1, device));
+        }
 
         let stream = forge_runtime::cuda::default_stream(0);
         let n_i32 = n as i32;
@@ -206,10 +217,12 @@ extern "C" __global__ void prefix_sum_fixup(
         let sorted_idx = fields.u32_fields.get_mut("sorted_indices").unwrap() as *mut forge_runtime::Array<u32>;
         let cell_offset = fields.u32_fields.get_mut("cell_offset").unwrap() as *mut forge_runtime::Array<u32>;
 
-        // Zero out cell_count and cell_offset
+        // Zero out cell_count and cell_offset using GPU memset (no allocation)
         unsafe {
-            *cell_count = forge_runtime::Array::<u32>::zeros(num_cells, device);
-            *cell_offset = forge_runtime::Array::<u32>::zeros(num_cells, device);
+            stream.memset_zeros((*cell_count).cuda_slice_mut().unwrap())
+                .map_err(|e| ForgeError::LaunchFailed(format!("memset cell_count: {:?}", e)))?;
+            stream.memset_zeros((*cell_offset).cuda_slice_mut().unwrap())
+                .map_err(|e| ForgeError::LaunchFailed(format!("memset cell_offset: {:?}", e)))?;
         }
 
         // Step 1: compute cell indices
@@ -240,11 +253,22 @@ extern "C" __global__ void prefix_sum_fixup(
             b.launch(config_n).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
 
-        // Step 3: GPU prefix sum
+        // Step 3: GPU prefix sum (using pre-allocated temp buffers)
         {
             let block_elems = 1024;
             let num_blocks = (num_cells + block_elems - 1) / block_elems;
-            let mut block_sums = forge_runtime::Array::<u32>::zeros(num_blocks.max(1), device);
+
+            let block_sums = fields.u32_fields.get_mut("_psum_block_sums").unwrap() as *mut forge_runtime::Array<u32>;
+            let block_sums_scanned = fields.u32_fields.get_mut("_psum_block_sums_scanned").unwrap() as *mut forge_runtime::Array<u32>;
+            let dummy = fields.u32_fields.get_mut("_psum_dummy").unwrap() as *mut forge_runtime::Array<u32>;
+
+            // Zero temp buffers
+            unsafe {
+                stream.memset_zeros((*block_sums).cuda_slice_mut().unwrap())
+                    .map_err(|e| ForgeError::LaunchFailed(format!("memset block_sums: {:?}", e)))?;
+                stream.memset_zeros((*block_sums_scanned).cuda_slice_mut().unwrap())
+                    .map_err(|e| ForgeError::LaunchFailed(format!("memset block_sums_scanned: {:?}", e)))?;
+            }
 
             unsafe {
                 use forge_runtime::cuda::PushKernelArg;
@@ -258,13 +282,12 @@ extern "C" __global__ void prefix_sum_fixup(
                 let mut b = stream.launch_builder(&func);
                 b.arg((*cell_count).cuda_slice().unwrap());
                 b.arg((*cell_start).cuda_slice_mut().unwrap());
-                b.arg(block_sums.cuda_slice_mut().unwrap());
+                b.arg((*block_sums).cuda_slice_mut().unwrap());
                 b.arg(&nc_i32);
                 b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
             }
 
             if num_blocks > 1 {
-                let mut block_sums_scanned = forge_runtime::Array::<u32>::zeros(num_blocks, device);
                 unsafe {
                     use forge_runtime::cuda::PushKernelArg;
                     let func = prefix_sum_kernel.get_function(0)?;
@@ -273,12 +296,11 @@ extern "C" __global__ void prefix_sum_fixup(
                         block_dim: (512, 1, 1),
                         shared_mem_bytes: 0,
                     };
-                    let mut dummy = forge_runtime::Array::<u32>::zeros(1, device);
                     let nb_i32 = num_blocks as i32;
                     let mut b = stream.launch_builder(&func);
-                    b.arg(block_sums.cuda_slice().unwrap());
-                    b.arg(block_sums_scanned.cuda_slice_mut().unwrap());
-                    b.arg(dummy.cuda_slice_mut().unwrap());
+                    b.arg((*block_sums).cuda_slice().unwrap());
+                    b.arg((*block_sums_scanned).cuda_slice_mut().unwrap());
+                    b.arg((*dummy).cuda_slice_mut().unwrap());
                     b.arg(&nb_i32);
                     b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
                 }
@@ -294,7 +316,7 @@ extern "C" __global__ void prefix_sum_fixup(
                     let nc_i32 = num_cells as i32;
                     let mut b = stream.launch_builder(&func);
                     b.arg((*cell_start).cuda_slice_mut().unwrap());
-                    b.arg(block_sums_scanned.cuda_slice().unwrap());
+                    b.arg((*block_sums_scanned).cuda_slice().unwrap());
                     b.arg(&nc_i32);
                     b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
                 }
@@ -669,7 +691,7 @@ extern "C" __global__ void sph_fused_force(
             }
         }
 
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+        // No final sync — Pipeline::step() handles end-of-step barrier
         Ok(())
     }
 }

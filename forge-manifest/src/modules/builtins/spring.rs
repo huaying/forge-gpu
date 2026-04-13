@@ -108,7 +108,7 @@ impl SimModule for SpringModule {
             b.arg(&ns_i32);
             b.launch(config).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+
 
         // Store rest lengths for next step
         if let Some(rl) = rest_lengths {
