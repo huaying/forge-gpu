@@ -74,9 +74,17 @@ fn bench_kernel_launch_overhead() {
     let data = Array::<f32>::zeros(1, Device::Cuda(0));
     let n = 1i32;
 
-    bench("kernel_launch_overhead", || {
+    // Sync launch (like before)
+    bench("kernel_launch_sync", || {
         empty_kernel::launch(&data, n, 1, 0).unwrap();
     }, 1000);
+
+    // Async launch (fair comparison with Warp)
+    bench("kernel_launch_async", || {
+        empty_kernel::launch_async(&data, n, 1, 0).unwrap();
+    }, 1000);
+    // Final sync
+    forge_runtime::cuda::synchronize(0);
 }
 
 #[test]
@@ -88,18 +96,21 @@ fn bench_memcpy_htod() {
         let data: Vec<f32> = vec![1.0; size];
         let label = format!("memcpy_htod_{}M", size / 1_000_000);
 
-        let start = std::time::Instant::now();
-        let iterations = if size >= 100_000_000 { 5 } else { 20 };
+        // Warm up memory pool
+        let _ = Array::from_vec(data.clone(), Device::Cuda(0));
 
+        let iterations: u32 = if size >= 100_000_000 { 5 } else { 20 };
+
+        let start = std::time::Instant::now();
         for _ in 0..iterations {
             let _gpu = Array::from_vec(data.clone(), Device::Cuda(0));
         }
         let elapsed = start.elapsed();
-        let per_iter = elapsed / iterations as u32;
+        let per_iter = elapsed / iterations;
         let bytes = size * 4;
         let gbps = bytes as f64 / per_iter.as_secs_f64() / 1e9;
 
-        println!("BENCH {}: {:.2} ms ({:.1} GB/s)", label, per_iter.as_millis(), gbps);
+        println!("BENCH {}: {:.3} ms ({:.1} GB/s)", label, per_iter.as_micros() as f64 / 1000.0, gbps);
     }
 }
 
@@ -136,23 +147,24 @@ fn bench_saxpy() {
         let mut y = Array::<f32>::fill(size, 2.0, Device::Cuda(0));
         let a = 3.0f32;
         let n = size as i32;
-        let label = format!("saxpy_{}M", size / 1_000_000);
         let iterations = 100;
 
-        bench(&label, || {
-            saxpy::launch(&x, &mut y, a, n, size, 0).unwrap();
-        }, iterations);
+        // Warm up
+        saxpy::launch_async(&x, &mut y, a, n, size, 0).unwrap();
+        forge_runtime::cuda::synchronize(0);
 
-        // Calculate effective bandwidth (read x + read y + write y = 3 * size * 4 bytes)
+        // Async launch (fair comparison with Warp)
         let start = std::time::Instant::now();
         for _ in 0..iterations {
-            saxpy::launch(&x, &mut y, a, n, size, 0).unwrap();
+            saxpy::launch_async(&x, &mut y, a, n, size, 0).unwrap();
         }
+        forge_runtime::cuda::synchronize(0);
         let elapsed = start.elapsed();
         let per_iter = elapsed / iterations as u32;
         let bytes = 3 * size * 4;
         let gbps = bytes as f64 / per_iter.as_secs_f64() / 1e9;
-        println!("  → effective bandwidth: {:.1} GB/s", gbps);
+        let label = format!("saxpy_{}M", size / 1_000_000);
+        println!("BENCH {}: {:.3} ms ({:.0} GB/s)", label, per_iter.as_micros() as f64 / 1000.0, gbps);
     }
 }
 
