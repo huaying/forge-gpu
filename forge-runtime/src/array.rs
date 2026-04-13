@@ -308,6 +308,35 @@ impl<T: Copy + DeviceRepr> Array<T> {
     }
 
     /// Create an array from a Vec with a specific shape.
+
+    /// Create an array from a slice (borrows data, no Vec clone needed).
+    /// For GPU, this is faster than from_vec for large arrays since
+    /// it avoids the CPU-side Vec clone.
+    pub fn from_slice(data: &[T], device: Device) -> Self {
+        let len = data.len();
+        match device {
+            Device::Cpu => Self {
+                storage: ArrayStorage::Cpu(data.to_vec()),
+                len,
+                device,
+                shape: Shape::new_1d(len),
+            },
+            Device::Cuda(ordinal) => {
+                let stream = crate::cuda::default_stream(ordinal);
+                let buf = stream
+                    .clone_htod(data)
+                    .expect("CUDA clone_htod failed");
+                Self {
+                    storage: ArrayStorage::Cuda { buf, ordinal },
+                    len,
+                    device,
+                    shape: Shape::new_1d(len),
+                }
+            }
+        }
+    }
+
+    /// Create an array from a Vec with a specific shape.
     pub fn from_vec_nd(data: Vec<T>, shape: Shape, device: Device) -> Self {
         let len = data.len();
         assert_eq!(len, shape.total(), "Data length {} != shape total {}", len, shape.total());

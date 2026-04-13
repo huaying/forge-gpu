@@ -97,13 +97,13 @@ fn bench_memcpy_htod() {
         let label = format!("memcpy_htod_{}M", size / 1_000_000);
 
         // Warm up memory pool
-        let _ = Array::from_vec(data.clone(), Device::Cuda(0));
+        let _ = Array::from_slice(&data, Device::Cuda(0));
 
         let iterations: u32 = if size >= 100_000_000 { 5 } else { 20 };
 
         let start = std::time::Instant::now();
         for _ in 0..iterations {
-            let _gpu = Array::from_vec(data.clone(), Device::Cuda(0));
+            let _gpu = Array::from_slice(&data, Device::Cuda(0));
         }
         let elapsed = start.elapsed();
         let per_iter = elapsed / iterations;
