@@ -160,7 +160,7 @@ where
     })
 }
 
-fn init_fields(fields: &mut FieldSet, manifest: &SimManifest) {
+pub fn init_fields(fields: &mut FieldSet, manifest: &SimManifest) {
     let n = manifest.particle_count();
 
     // Initialize from field definitions
@@ -288,7 +288,7 @@ fn init_f32(n: usize, init: &Option<InitDef>) -> Vec<f32> {
     }
 }
 
-fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
+pub fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
     let mut pipeline = Pipeline::new();
 
     // If manifest has [[pipeline]] entries, use those

@@ -2,7 +2,8 @@
 //!
 //! Usage:
 //!   forge run sim.toml              — run simulation
-//!   forge run sim.toml --serve 8080 — run with live 3D viewer
+//!   forge run sim.toml --serve 8080 — run with live 3D viewer (Three.js)
+//!   forge run sim.toml --stream 8080 — run with Phantom H.264 streaming (requires phantom feature)
 //!   forge check sim.toml            — validate without running
 
 use forge_manifest::{SimManifest, run_manifest, run_manifest_streaming, validate};
@@ -26,6 +27,11 @@ fn main() {
 
     // Parse --serve flag
     let serve_port: Option<u16> = args.iter().position(|a| a == "--serve").and_then(|i| {
+        args.get(i + 1).and_then(|p| p.parse().ok()).or(Some(8080))
+    });
+
+    // Parse --stream flag (Phantom H.264 streaming)
+    let stream_port: Option<u16> = args.iter().position(|a| a == "--stream").and_then(|i| {
         args.get(i + 1).and_then(|p| p.parse().ok()).or(Some(8080))
     });
 
@@ -72,7 +78,31 @@ fn main() {
                 manifest.simulation.dt,
                 manifest.simulation.substeps);
 
-            if let Some(port) = serve_port {
+            if let Some(port) = stream_port {
+                // ── Phantom streaming mode ──
+                #[cfg(feature = "phantom")]
+                {
+                    use forge_manifest::phantom_bridge::phantom_bridge::ForgeStreamSource;
+                    use phantom_stream::StreamServer;
+
+                    println!("  Mode: Phantom H.264 streaming\n");
+
+                    let source = ForgeStreamSource::new(&manifest, 1280, 720)
+                        .expect("failed to create stream source");
+
+                    let server = StreamServer::new(source, port)
+                        .expect("failed to create stream server");
+
+                    println!("  Open http://localhost:{} in your browser\n", port);
+                    server.run().expect("stream server error");
+                }
+                #[cfg(not(feature = "phantom"))]
+                {
+                    eprintln!("❌ --stream requires the 'phantom' feature.");
+                    eprintln!("   Build with: cargo build --features phantom");
+                    std::process::exit(1);
+                }
+            } else if let Some(port) = serve_port {
                 // ── Streaming mode ──
                 println!();
                 let frame_buf = Arc::new(Mutex::new(FrameBuffer::new()));

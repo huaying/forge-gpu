@@ -39,6 +39,7 @@ mod validate;
 pub mod modules;
 pub mod expr;
 pub mod serve;
+pub mod phantom_bridge;
 mod manifest_runner;
 
 pub use schema::*;
