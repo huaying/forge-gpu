@@ -221,6 +221,79 @@ fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
             ForceDef::Drag { coefficient } => {
                 pipeline.add(Box::new(DragModule { coefficient: *coefficient as f32 }));
             }
+            ForceDef::SphDensity { smoothing_radius } => {
+                let spatial = manifest.spatial.as_ref();
+                let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or((*smoothing_radius * 2.0) as f32);
+                let grid_dims = spatial.map(|s| {
+                    [
+                        *s.grid_dims.first().unwrap_or(&32),
+                        *s.grid_dims.get(1).unwrap_or(&32),
+                        *s.grid_dims.get(2).unwrap_or(&32),
+                    ]
+                }).unwrap_or([32, 32, 32]);
+                let n = manifest.particle_count();
+                // Estimate particle mass from rest density + volume
+                // Default: assume rest_density=1000, volume=1m³, so mass = 1000/n
+                let particle_mass = 1000.0 / n as f32 * 0.001;
+                pipeline.add(Box::new(SphDensityModule {
+                    smoothing_radius: *smoothing_radius as f32,
+                    cell_size,
+                    grid_dims,
+                    particle_mass,
+                }));
+            }
+            ForceDef::SphPressure { gas_constant, rest_density } => {
+                let spatial = manifest.spatial.as_ref();
+                let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or(0.05);
+                let grid_dims = spatial.map(|s| {
+                    [
+                        *s.grid_dims.first().unwrap_or(&32),
+                        *s.grid_dims.get(1).unwrap_or(&32),
+                        *s.grid_dims.get(2).unwrap_or(&32),
+                    ]
+                }).unwrap_or([32, 32, 32]);
+                // Get smoothing_radius from preceding sph_density force
+                let smoothing_radius = manifest.forces.iter().find_map(|f| {
+                    if let ForceDef::SphDensity { smoothing_radius } = f {
+                        Some(*smoothing_radius as f32)
+                    } else { None }
+                }).unwrap_or(0.025);
+                let n = manifest.particle_count();
+                let particle_mass = *rest_density as f32 / n as f32 * 0.001;
+                pipeline.add(Box::new(SphPressureModule {
+                    gas_constant: *gas_constant as f32,
+                    rest_density: *rest_density as f32,
+                    smoothing_radius,
+                    cell_size,
+                    grid_dims,
+                    particle_mass,
+                }));
+            }
+            ForceDef::SphViscosity { coefficient } => {
+                let spatial = manifest.spatial.as_ref();
+                let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or(0.05);
+                let grid_dims = spatial.map(|s| {
+                    [
+                        *s.grid_dims.first().unwrap_or(&32),
+                        *s.grid_dims.get(1).unwrap_or(&32),
+                        *s.grid_dims.get(2).unwrap_or(&32),
+                    ]
+                }).unwrap_or([32, 32, 32]);
+                let smoothing_radius = manifest.forces.iter().find_map(|f| {
+                    if let ForceDef::SphDensity { smoothing_radius } = f {
+                        Some(*smoothing_radius as f32)
+                    } else { None }
+                }).unwrap_or(0.025);
+                let n = manifest.particle_count();
+                let particle_mass = 1000.0 / n as f32 * 0.001;
+                pipeline.add(Box::new(SphViscosityModule {
+                    coefficient: *coefficient as f32,
+                    smoothing_radius,
+                    cell_size,
+                    grid_dims,
+                    particle_mass,
+                }));
+            }
             _ => {}
         }
     }
@@ -251,6 +324,17 @@ fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
                     cy: center.get(1).copied().unwrap_or(0.0) as f32,
                     cz: center.get(2).copied().unwrap_or(0.0) as f32,
                     radius: *radius as f32,
+                    restitution: *restitution as f32,
+                }));
+            }
+            ConstraintDef::Box { min, max, restitution } => {
+                pipeline.add(Box::new(BoxColliderModule {
+                    min_x: min.first().copied().unwrap_or(0.0) as f32,
+                    min_y: min.get(1).copied().unwrap_or(0.0) as f32,
+                    min_z: min.get(2).copied().unwrap_or(0.0) as f32,
+                    max_x: max.first().copied().unwrap_or(1.0) as f32,
+                    max_y: max.get(1).copied().unwrap_or(1.0) as f32,
+                    max_z: max.get(2).copied().unwrap_or(1.0) as f32,
                     restitution: *restitution as f32,
                 }));
             }

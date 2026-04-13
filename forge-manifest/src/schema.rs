@@ -15,6 +15,8 @@ pub struct SimManifest {
     #[serde(default)]
     pub springs: Option<SpringConfig>,
     #[serde(default)]
+    pub spatial: Option<SpatialConfig>,
+    #[serde(default)]
     pub output: Option<OutputConfig>,
 }
 
@@ -104,6 +106,19 @@ pub enum ForceDef {
         #[serde(default = "default_wind_strength")]
         strength: f64,
     },
+    #[serde(rename = "sph_density")]
+    SphDensity {
+        smoothing_radius: f64,
+    },
+    #[serde(rename = "sph_pressure")]
+    SphPressure {
+        gas_constant: f64,
+        rest_density: f64,
+    },
+    #[serde(rename = "sph_viscosity")]
+    SphViscosity {
+        coefficient: f64,
+    },
 }
 
 fn default_gravity() -> Vec<f64> { vec![0.0, -9.81, 0.0] }
@@ -150,6 +165,19 @@ pub struct SpringConfig {
     #[serde(default)]
     pub connections: Vec<[u32; 2]>,
 }
+
+/// Spatial acceleration structure configuration.
+#[derive(Debug, Deserialize)]
+pub struct SpatialConfig {
+    #[serde(default = "default_spatial_type")]
+    pub r#type: String,
+    pub cell_size: f64,
+    #[serde(default = "default_grid_dims")]
+    pub grid_dims: Vec<u32>,
+}
+
+fn default_spatial_type() -> String { "hashgrid".to_string() }
+fn default_grid_dims() -> Vec<u32> { vec![32, 32, 32] }
 
 /// Output configuration.
 #[derive(Debug, Deserialize)]
