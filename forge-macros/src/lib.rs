@@ -14,6 +14,7 @@ mod cuda_emit;
 mod func;
 mod kernel;
 mod kernel_autodiff;
+mod forge_struct;
 
 use proc_macro::TokenStream;
 
@@ -87,6 +88,34 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn func(_attr: TokenStream, item: TokenStream) -> TokenStream {
     func::expand_func(item.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+/// Mark a struct as usable in GPU kernels.
+///
+/// Generates a CUDA C struct definition with matching fields and
+/// optional operator overloads (if all fields are the same scalar type).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use forge_macros::forge_struct;
+///
+/// #[forge_struct]
+/// #[derive(Clone, Copy)]
+/// pub struct Particle {
+///     pub x: f32,
+///     pub y: f32,
+///     pub z: f32,
+///     pub mass: f32,
+/// }
+///
+/// // Generated: Particle_forge_meta::CUDA_STRUCT_DEF (CUDA C struct string)
+/// ```
+#[proc_macro_attribute]
+pub fn forge_struct(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    forge_struct::expand_forge_struct(item.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

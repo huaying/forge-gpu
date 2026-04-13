@@ -1001,6 +1001,11 @@ pub fn builtin_to_cuda_pub(name: &str) -> String {
     builtin_to_cuda(name)
 }
 
+/// Public version of scalar_to_cuda for use by forge_struct module.
+pub fn scalar_to_cuda_pub(type_name: &str) -> Result<&'static str, String> {
+    scalar_to_cuda(type_name).map_err(|e| e.to_string())
+}
+
 /// Map Rust builtin function names to CUDA equivalents.
 fn builtin_to_cuda(name: &str) -> String {
     match name {
