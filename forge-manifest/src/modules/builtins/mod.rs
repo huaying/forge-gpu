@@ -10,6 +10,7 @@ mod drag;
 mod sph_density;
 mod sph_pressure;
 mod sph_viscosity;
+mod sph_fused;
 mod box_collider;
 
 pub use gravity::GravityModule;
@@ -22,4 +23,5 @@ pub use drag::DragModule;
 pub use sph_density::SphDensityModule;
 pub use sph_pressure::SphPressureModule;
 pub use sph_viscosity::SphViscosityModule;
+pub use sph_fused::SphFusedModule;
 pub use box_collider::BoxColliderModule;

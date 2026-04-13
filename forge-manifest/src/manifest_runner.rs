@@ -208,93 +208,161 @@ fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
     // Check if we have explicit pipeline in the TOML
     // For now, build from forces → integrate → constraints pattern
 
-    // Forces
-    for force in &manifest.forces {
-        match force {
-            ForceDef::Gravity { value } => {
-                pipeline.add(Box::new(GravityModule::new(
-                    value.first().copied().unwrap_or(0.0) as f32,
-                    value.get(1).copied().unwrap_or(-9.81) as f32,
-                    value.get(2).copied().unwrap_or(0.0) as f32,
-                )));
+    // ── Forces ──
+    // Check for SPH fusion opportunity: if we have all three SPH forces,
+    // replace them with a single fused module (2 neighbor passes instead of 3).
+    let has_sph_density = manifest.forces.iter().any(|f| matches!(f, ForceDef::SphDensity { .. }));
+    let has_sph_pressure = manifest.forces.iter().any(|f| matches!(f, ForceDef::SphPressure { .. }));
+    let has_sph_viscosity = manifest.forces.iter().any(|f| matches!(f, ForceDef::SphViscosity { .. }));
+    let fuse_sph = has_sph_density && has_sph_pressure && has_sph_viscosity;
+
+    if fuse_sph {
+        // Extract SPH params
+        let smoothing_radius = manifest.forces.iter().find_map(|f| {
+            if let ForceDef::SphDensity { smoothing_radius } = f {
+                Some(*smoothing_radius as f32)
+            } else { None }
+        }).unwrap_or(0.025);
+        let (gas_constant, rest_density) = manifest.forces.iter().find_map(|f| {
+            if let ForceDef::SphPressure { gas_constant, rest_density } = f {
+                Some((*gas_constant as f32, *rest_density as f32))
+            } else { None }
+        }).unwrap_or((2000.0, 1000.0));
+        let viscosity_coefficient = manifest.forces.iter().find_map(|f| {
+            if let ForceDef::SphViscosity { coefficient } = f {
+                Some(*coefficient as f32)
+            } else { None }
+        }).unwrap_or(0.01);
+
+        let spatial = manifest.spatial.as_ref();
+        let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or(smoothing_radius * 2.0);
+        let grid_dims = spatial.map(|s| {
+            [
+                *s.grid_dims.first().unwrap_or(&32),
+                *s.grid_dims.get(1).unwrap_or(&32),
+                *s.grid_dims.get(2).unwrap_or(&32),
+            ]
+        }).unwrap_or([32, 32, 32]);
+        let n = manifest.particle_count();
+        let particle_mass = rest_density / n as f32 * 0.001;
+
+        println!("  ⚡ SPH kernel fusion: density + pressure + viscosity → 2 passes (was 3)");
+
+        pipeline.add(Box::new(SphFusedModule {
+            smoothing_radius,
+            cell_size,
+            grid_dims,
+            particle_mass,
+            gas_constant,
+            rest_density,
+            viscosity_coefficient,
+        }));
+
+        // Add non-SPH forces
+        for force in &manifest.forces {
+            match force {
+                ForceDef::SphDensity { .. } | ForceDef::SphPressure { .. } | ForceDef::SphViscosity { .. } => {
+                    // already handled by fused module
+                }
+                ForceDef::Gravity { value } => {
+                    pipeline.add(Box::new(GravityModule::new(
+                        value.first().copied().unwrap_or(0.0) as f32,
+                        value.get(1).copied().unwrap_or(-9.81) as f32,
+                        value.get(2).copied().unwrap_or(0.0) as f32,
+                    )));
+                }
+                ForceDef::Drag { coefficient } => {
+                    pipeline.add(Box::new(DragModule { coefficient: *coefficient as f32 }));
+                }
+                _ => {}
             }
-            ForceDef::Drag { coefficient } => {
-                pipeline.add(Box::new(DragModule { coefficient: *coefficient as f32 }));
+        }
+    } else {
+        // No fusion — add forces individually
+        for force in &manifest.forces {
+            match force {
+                ForceDef::Gravity { value } => {
+                    pipeline.add(Box::new(GravityModule::new(
+                        value.first().copied().unwrap_or(0.0) as f32,
+                        value.get(1).copied().unwrap_or(-9.81) as f32,
+                        value.get(2).copied().unwrap_or(0.0) as f32,
+                    )));
+                }
+                ForceDef::Drag { coefficient } => {
+                    pipeline.add(Box::new(DragModule { coefficient: *coefficient as f32 }));
+                }
+                ForceDef::SphDensity { smoothing_radius } => {
+                    let spatial = manifest.spatial.as_ref();
+                    let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or((*smoothing_radius * 2.0) as f32);
+                    let grid_dims = spatial.map(|s| {
+                        [
+                            *s.grid_dims.first().unwrap_or(&32),
+                            *s.grid_dims.get(1).unwrap_or(&32),
+                            *s.grid_dims.get(2).unwrap_or(&32),
+                        ]
+                    }).unwrap_or([32, 32, 32]);
+                    let n = manifest.particle_count();
+                    let particle_mass = 1000.0 / n as f32 * 0.001;
+                    pipeline.add(Box::new(SphDensityModule {
+                        smoothing_radius: *smoothing_radius as f32,
+                        cell_size,
+                        grid_dims,
+                        particle_mass,
+                    }));
+                }
+                ForceDef::SphPressure { gas_constant, rest_density } => {
+                    let spatial = manifest.spatial.as_ref();
+                    let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or(0.05);
+                    let grid_dims = spatial.map(|s| {
+                        [
+                            *s.grid_dims.first().unwrap_or(&32),
+                            *s.grid_dims.get(1).unwrap_or(&32),
+                            *s.grid_dims.get(2).unwrap_or(&32),
+                        ]
+                    }).unwrap_or([32, 32, 32]);
+                    let smoothing_radius = manifest.forces.iter().find_map(|f| {
+                        if let ForceDef::SphDensity { smoothing_radius } = f {
+                            Some(*smoothing_radius as f32)
+                        } else { None }
+                    }).unwrap_or(0.025);
+                    let n = manifest.particle_count();
+                    let particle_mass = *rest_density as f32 / n as f32 * 0.001;
+                    pipeline.add(Box::new(SphPressureModule {
+                        gas_constant: *gas_constant as f32,
+                        rest_density: *rest_density as f32,
+                        smoothing_radius,
+                        cell_size,
+                        grid_dims,
+                        particle_mass,
+                    }));
+                }
+                ForceDef::SphViscosity { coefficient } => {
+                    let spatial = manifest.spatial.as_ref();
+                    let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or(0.05);
+                    let grid_dims = spatial.map(|s| {
+                        [
+                            *s.grid_dims.first().unwrap_or(&32),
+                            *s.grid_dims.get(1).unwrap_or(&32),
+                            *s.grid_dims.get(2).unwrap_or(&32),
+                        ]
+                    }).unwrap_or([32, 32, 32]);
+                    let smoothing_radius = manifest.forces.iter().find_map(|f| {
+                        if let ForceDef::SphDensity { smoothing_radius } = f {
+                            Some(*smoothing_radius as f32)
+                        } else { None }
+                    }).unwrap_or(0.025);
+                    let n = manifest.particle_count();
+                    let particle_mass = 1000.0 / n as f32 * 0.001;
+                    pipeline.add(Box::new(SphViscosityModule {
+                        coefficient: *coefficient as f32,
+                        smoothing_radius,
+                        cell_size,
+                        grid_dims,
+                        particle_mass,
+                    }));
+                }
+                _ => {}
             }
-            ForceDef::SphDensity { smoothing_radius } => {
-                let spatial = manifest.spatial.as_ref();
-                let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or((*smoothing_radius * 2.0) as f32);
-                let grid_dims = spatial.map(|s| {
-                    [
-                        *s.grid_dims.first().unwrap_or(&32),
-                        *s.grid_dims.get(1).unwrap_or(&32),
-                        *s.grid_dims.get(2).unwrap_or(&32),
-                    ]
-                }).unwrap_or([32, 32, 32]);
-                let n = manifest.particle_count();
-                // Estimate particle mass from rest density + volume
-                // Default: assume rest_density=1000, volume=1m³, so mass = 1000/n
-                let particle_mass = 1000.0 / n as f32 * 0.001;
-                pipeline.add(Box::new(SphDensityModule {
-                    smoothing_radius: *smoothing_radius as f32,
-                    cell_size,
-                    grid_dims,
-                    particle_mass,
-                }));
-            }
-            ForceDef::SphPressure { gas_constant, rest_density } => {
-                let spatial = manifest.spatial.as_ref();
-                let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or(0.05);
-                let grid_dims = spatial.map(|s| {
-                    [
-                        *s.grid_dims.first().unwrap_or(&32),
-                        *s.grid_dims.get(1).unwrap_or(&32),
-                        *s.grid_dims.get(2).unwrap_or(&32),
-                    ]
-                }).unwrap_or([32, 32, 32]);
-                // Get smoothing_radius from preceding sph_density force
-                let smoothing_radius = manifest.forces.iter().find_map(|f| {
-                    if let ForceDef::SphDensity { smoothing_radius } = f {
-                        Some(*smoothing_radius as f32)
-                    } else { None }
-                }).unwrap_or(0.025);
-                let n = manifest.particle_count();
-                let particle_mass = *rest_density as f32 / n as f32 * 0.001;
-                pipeline.add(Box::new(SphPressureModule {
-                    gas_constant: *gas_constant as f32,
-                    rest_density: *rest_density as f32,
-                    smoothing_radius,
-                    cell_size,
-                    grid_dims,
-                    particle_mass,
-                }));
-            }
-            ForceDef::SphViscosity { coefficient } => {
-                let spatial = manifest.spatial.as_ref();
-                let cell_size = spatial.map(|s| s.cell_size as f32).unwrap_or(0.05);
-                let grid_dims = spatial.map(|s| {
-                    [
-                        *s.grid_dims.first().unwrap_or(&32),
-                        *s.grid_dims.get(1).unwrap_or(&32),
-                        *s.grid_dims.get(2).unwrap_or(&32),
-                    ]
-                }).unwrap_or([32, 32, 32]);
-                let smoothing_radius = manifest.forces.iter().find_map(|f| {
-                    if let ForceDef::SphDensity { smoothing_radius } = f {
-                        Some(*smoothing_radius as f32)
-                    } else { None }
-                }).unwrap_or(0.025);
-                let n = manifest.particle_count();
-                let particle_mass = 1000.0 / n as f32 * 0.001;
-                pipeline.add(Box::new(SphViscosityModule {
-                    coefficient: *coefficient as f32,
-                    smoothing_radius,
-                    cell_size,
-                    grid_dims,
-                    particle_mass,
-                }));
-            }
-            _ => {}
         }
     }
 
