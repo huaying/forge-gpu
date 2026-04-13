@@ -458,6 +458,37 @@ pub fn generate_device_func_source(
 }
 
 /// Generate the complete CUDA C++ kernel source.
+/// Device utility functions included in every kernel.
+const FORGE_DEVICE_UTILS: &str = r#"
+// ── Forge PRNG (xorshift32) ──
+__device__ unsigned int forge_rand_init(unsigned int seed) {
+    // Wang hash for better initial distribution
+    seed = (seed ^ 61u) ^ (seed >> 16u);
+    seed *= 9u;
+    seed = seed ^ (seed >> 4u);
+    seed *= 0x27d4eb2du;
+    seed = seed ^ (seed >> 15u);
+    return seed;
+}
+
+__device__ unsigned int forge_randi(unsigned int* state) {
+    unsigned int x = *state;
+    x ^= x << 13u;
+    x ^= x >> 17u;
+    x ^= x << 5u;
+    *state = x;
+    return x;
+}
+
+__device__ float forge_randf(unsigned int* state) {
+    return (float)forge_randi(state) / 4294967295.0f;
+}
+
+__device__ float forge_randf_range(unsigned int* state, float lo, float hi) {
+    return lo + forge_randf(state) * (hi - lo);
+}
+"#;
+
 pub fn generate_cuda_source(
     kernel_name: &str,
     params: &[KernelParam],
@@ -468,6 +499,9 @@ pub fn generate_cuda_source(
     // Generate struct definitions for any Forge types used
     let preamble = generate_struct_preamble(params, body_stmts);
     cuda.push_str(&preamble);
+
+    // Utility device functions (random, etc.)
+    cuda.push_str(FORGE_DEVICE_UTILS);
 
     // Kernel signature
     cuda.push_str("extern \"C\" __global__ void ");
@@ -892,19 +926,75 @@ pub fn builtin_to_cuda_pub(name: &str) -> String {
 fn builtin_to_cuda(name: &str) -> String {
     match name {
         "thread_id" => "blockIdx.x * blockDim.x + threadIdx.x".to_string(),
+        // Trig
         "sin" | "sinf" => "sinf".to_string(),
         "cos" | "cosf" => "cosf".to_string(),
+        "tan" | "tanf" => "tanf".to_string(),
+        "asin" | "asinf" => "asinf".to_string(),
+        "acos" | "acosf" => "acosf".to_string(),
+        "atan" | "atanf" => "atanf".to_string(),
+        "atan2" => "atan2f".to_string(),
+        "sinh" => "sinhf".to_string(),
+        "cosh" => "coshf".to_string(),
+        "tanh" => "tanhf".to_string(),
+        // Exponential / Log
+        "exp" => "expf".to_string(),
+        "exp2" => "exp2f".to_string(),
+        "log" => "logf".to_string(),
+        "log2" => "log2f".to_string(),
+        "log10" => "log10f".to_string(),
+        "pow" => "powf".to_string(),
         "sqrt" | "sqrtf" => "sqrtf".to_string(),
+        "rsqrt" => "rsqrtf".to_string(),
+        "cbrt" => "cbrtf".to_string(),
+        // Rounding
         "abs" | "fabsf" => "fabsf".to_string(),
-        "min" | "fminf" => "fminf".to_string(),
-        "max" | "fmaxf" => "fmaxf".to_string(),
         "floor" => "floorf".to_string(),
         "ceil" => "ceilf".to_string(),
         "round" => "roundf".to_string(),
-        "exp" => "expf".to_string(),
-        "log" => "logf".to_string(),
-        "pow" => "powf".to_string(),
-        "atan2" => "atan2f".to_string(),
+        "trunc" => "truncf".to_string(),
+        "frac" | "fract" => "fractf".to_string(),  // CUDA: fractf or x - floorf(x)
+        // Min/Max/Clamp
+        "min" | "fminf" => "fminf".to_string(),
+        "max" | "fmaxf" => "fmaxf".to_string(),
+        "clamp" => "fminf(fmaxf".to_string(), // NOTE: handled specially below
+        // Special
+        "erf" => "erff".to_string(),
+        "erfc" => "erfcf".to_string(),
+        "sign" | "copysign" => "copysignf".to_string(),
+        "isnan" => "isnan".to_string(),
+        "isinf" => "isinf".to_string(),
+        "isfinite" => "isfinite".to_string(),
+        // Atomics
+        "atomic_add" => "atomicAdd".to_string(),
+        "atomic_min" => "atomicMin".to_string(),
+        "atomic_max" => "atomicMax".to_string(),
+        "atomic_cas" | "atomic_compare_exchange" => "atomicCAS".to_string(),
+        "atomic_exch" | "atomic_exchange" => "atomicExch".to_string(),
+        "atomic_sub" => "atomicSub".to_string(),
+        "atomic_and" => "atomicAnd".to_string(),
+        "atomic_or" => "atomicOr".to_string(),
+        "atomic_xor" => "atomicXor".to_string(),
+        // Warp primitives
+        "warp_shfl" | "shfl_sync" => "__shfl_sync".to_string(),
+        "warp_shfl_down" | "shfl_down_sync" => "__shfl_down_sync".to_string(),
+        "warp_shfl_up" | "shfl_up_sync" => "__shfl_up_sync".to_string(),
+        "warp_shfl_xor" | "shfl_xor_sync" => "__shfl_xor_sync".to_string(),
+        "warp_ballot" | "ballot_sync" => "__ballot_sync".to_string(),
+        "warp_all" | "all_sync" => "__all_sync".to_string(),
+        "warp_any" | "any_sync" => "__any_sync".to_string(),
+        // Random (xorshift-based, state is u32)
+        "rand_init" => "forge_rand_init".to_string(),
+        "rand_f32" | "randf" => "forge_randf".to_string(),
+        "rand_u32" | "randi" => "forge_randi".to_string(),
+        // Sync
+        "syncthreads" | "sync_threads" => "__syncthreads".to_string(),
+        "threadfence" | "thread_fence" => "__threadfence".to_string(),
+        // Thread indices
+        "block_id" | "block_idx" => "blockIdx.x".to_string(),
+        "block_dim" | "block_size" => "blockDim.x".to_string(),
+        "thread_idx" | "local_thread_id" => "threadIdx.x".to_string(),
+        // Passthrough
         other => other.to_string(),
     }
 }
@@ -972,6 +1062,19 @@ mod tests {
         assert_eq!(builtin_to_cuda("cos"), "cosf");
         assert_eq!(builtin_to_cuda("sqrt"), "sqrtf");
         assert_eq!(builtin_to_cuda("thread_id"), "blockIdx.x * blockDim.x + threadIdx.x");
+        // Atomics
+        assert_eq!(builtin_to_cuda("atomic_add"), "atomicAdd");
+        assert_eq!(builtin_to_cuda("atomic_min"), "atomicMin");
+        assert_eq!(builtin_to_cuda("atomic_max"), "atomicMax");
+        assert_eq!(builtin_to_cuda("atomic_cas"), "atomicCAS");
+        // Math
+        assert_eq!(builtin_to_cuda("erf"), "erff");
+        assert_eq!(builtin_to_cuda("cbrt"), "cbrtf");
+        assert_eq!(builtin_to_cuda("rsqrt"), "rsqrtf");
+        assert_eq!(builtin_to_cuda("tanh"), "tanhf");
+        // Warp
+        assert_eq!(builtin_to_cuda("warp_shfl_down"), "__shfl_down_sync");
+        assert_eq!(builtin_to_cuda("syncthreads"), "__syncthreads");
     }
 
     #[test]
