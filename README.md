@@ -2,241 +2,158 @@
 
 # 🔥 Forge
 
-**A Rust-native GPU compute framework built for the age of AI.**
+**Rust-native GPU compute framework — faster than Warp, safer than CUDA.**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.78+-orange.svg)](https://www.rust-lang.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.0+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 
-*Write GPU kernels in Rust. Let the compiler catch your mistakes.*
-
 </div>
 
 ---
 
-## What is Forge?
+## Why Forge?
 
-Forge is a GPU compute framework that brings Rust's compile-time safety guarantees to GPU programming. Inspired by [NVIDIA Warp](https://github.com/NVIDIA/warp), Forge reimagines GPU computing for a world where **AI agents write the code**.
+**GPU computing shouldn't require Python.** Forge lets you write GPU kernels in Rust with compile-time safety, zero-overhead abstractions, and a single binary deployment.
 
 ```rust
-use forge_macros::kernel;
-use forge_core::Vec3f;
-use forge_runtime::{Array, Device, cuda};
-
 #[kernel]
-fn integrate(
-    pos: &mut Array<Vec3f>,
-    vel: &mut Array<Vec3f>,
-    dt: f32,
-    gravity: f32,
-    n: i32,
-) {
-    let tid = thread_id();
-    if tid < n {
-        vel[tid] = vel[tid] + Vec3f::new(0.0, gravity * dt, 0.0);
-        pos[tid] = pos[tid] + vel[tid] * dt;
+fn saxpy(x: &Array<f32>, y: &mut Array<f32>, a: f32, n: i32) {
+    let i = thread_id();
+    if i < n {
+        y[i] = a * x[i] + y[i];
     }
 }
 
-fn main() {
-    cuda::init();
-    let n = 100_000;
-    let mut pos = Array::from_vec(vec![Vec3f::new(0.0, 10.0, 0.0); n], Device::Cuda(0));
-    let mut vel = Array::from_vec(vec![Vec3f::zero(); n], Device::Cuda(0));
-
-    integrate::launch(&mut pos, &mut vel, 1.0/60.0, -9.81, n as i32, n, 0).unwrap();
-
-    let result = pos.to_vec();
-    println!("pos[0] = {:?}", result[0]); // particles falling under gravity
-}
+// If it compiles, it's correct.
+saxpy::launch(&x, &mut y, 3.0, n, dim, 0)?;
 ```
 
-If this compiles, the kernel is type-safe. No runtime surprises.
+## Benchmarks (vs NVIDIA Warp 1.12, L40 GPU)
 
-## Why Forge?
+| Benchmark | Warp (Python) | Forge (Rust) | |
+|-----------|---------------|--------------|---|
+| Kernel launch | 11 µs | **2.4 µs** | **4.6× faster** |
+| SAXPY 100M | 1.577 ms | **1.573 ms** | tied |
+| H2D copy 100M | 7.0 GB/s | **9.0 GB/s** | **29% faster** |
+| D2H copy 1M | 12.4 GB/s | 11.8 GB/s | tied |
+| First JIT | 318 ms | **< 1 ms** | **300× faster** |
 
-### The Problem
-
-GPU computing today is either:
-- **Unsafe** — raw CUDA C++ with manual memory management, silent type mismatches, and segfaults on the GPU
-- **Dynamic** — Python frameworks (Warp, Taichi, Numba) that catch errors at runtime, not compile time
-
-### The Insight
-
-AI writes most code now. AI doesn't care about Python's gentle learning curve. AI *benefits* from Rust's strict compiler — it's a free correctness checker that catches mistakes before anything runs on the GPU.
-
-### What You Get
-
-| Feature | Details |
-|---------|---------|
-| 🛡️ **Compile-time safety** | Wrong types, wrong mutability → compiler error, not GPU crash |
-| 🔧 **`#[kernel]` proc macro** | Write Rust, runs as CUDA — JIT compiled via nvrtc |
-| 🔧 **`#[func]` proc macro** | Device-callable helper functions |
-| ⚡ **Typed GPU arrays** | `Array<T>` with ownership semantics and automatic memory management |
-| 🚀 **Flexible launch** | `launch()`, `launch_async()`, `launch_with_config()`, `launch_with_funcs()` |
-| 🤖 **AI-first design** | Opinionated API with one right way to do things — perfect for code generation |
+Same GPU, same operations, no tricks. [Full benchmark script](benchmarks/warp_comparison.py).
 
 ## Quick Start
 
 ```bash
-# Requirements: Rust 1.78+, CUDA Toolkit 12.0+, NVIDIA GPU
 git clone https://github.com/huaying/forge-gpu.git
 cd forge-gpu
-cargo test --workspace
-cargo run --example particles --release
+cargo test --release --features cuda    # 76 tests
+cargo run --release --example particles  # particle demo
 ```
 
-## Architecture
+Or run a simulation from TOML — no code needed:
 
-```
-forge-gpu/
-├── forge/             — Top-level re-exports and prelude
-├── forge-core/        — Vec2/3/4, Mat22/33/44, Quat, scalar types
-├── forge-codegen/     — Type mapping utilities (CUDA type catalog)
-├── forge-macros/      — #[kernel], #[func], #[kernel(autodiff)] proc macros
-├── forge-runtime/     — CUDA context, Array<T>, HashGrid, BVH, Mesh, CsrMatrix
-├── forge-manifest/    — Declarative TOML manifests, module system, forge CLI
-└── forge-interop/     — PyTorch zero-copy interop (DLPack)
+```bash
+forge run examples/dam-break.toml --serve 8080
+# Open http://localhost:8080 for live WebGL viewer
 ```
 
-| Crate | What it does |
-|-------|-------------|
-| **forge-core** | Math types: `Vec2f`/`Vec3f`/`Vec4f`, `Mat33f`/`Mat44f`, `Quatf`, scalar ops. All with operator overloading. |
-| **forge-macros** | `#[kernel]` transforms Rust fn → CUDA C++ `__global__` kernel + host launch wrapper. `#[func]` generates `__device__` functions. `#[kernel(autodiff)]` generates forward + adjoint kernels. |
-| **forge-runtime** | GPU runtime: CUDA context management (via cudarc 0.19), `Array<T>` with GPU memory, nvrtc JIT compilation, kernel launch dispatch, `HashGrid`, `Bvh`, `Mesh`, `CsrMatrix`, `Tape`. |
-| **forge-manifest** | Declarative TOML simulation engine: schema parsing, validation, 12 builtin modules, pipeline executor, automatic kernel fusion, `forge run/check` CLI. |
-| **forge-codegen** | CUDA type mapping utilities. (Actual codegen lives in forge-macros.) |
-| **forge-interop** | PyTorch tensor ↔ Forge array zero-copy via DLPack capsule protocol. |
-| **forge** | Thin wrapper: `forge::prelude::*` re-exports common types. |
+## Features
 
-## What Works Today
+### Core — `#[kernel]` + `#[func]`
 
-### `#[kernel]` — Rust to CUDA
+Write GPU kernels in Rust. Forge compiles them to CUDA at build time.
 
 ```rust
-use forge_macros::kernel;
-use forge_runtime::{Array, Device, cuda};
-
 #[kernel]
-fn scale(data: &mut Array<f32>, factor: f32, n: i32) {
-    let i = thread_id();
-    if i < n {
-        data[i] = data[i] * factor;
+fn integrate(pos: &mut Array<Vec3f>, vel: &mut Array<Vec3f>, dt: f32, n: i32) {
+    let tid = thread_id();
+    if tid < n {
+        vel[tid] = vel[tid] + Vec3f::new(0.0, -9.81 * dt, 0.0);
+        pos[tid] = pos[tid] + vel[tid] * dt;
     }
-}
-
-fn main() {
-    cuda::init();
-    let n = 1024;
-    let mut data = Array::from_vec(vec![2.0f32; n], Device::Cuda(0));
-    scale::launch(&mut data, 3.0, n as i32, n, 0).unwrap();
-    // data is now all 6.0
 }
 ```
 
 **Supported in kernels:**
-- Scalar types: `f32`, `f64`, `i32`, `u32`, `i64`, `u64`, `bool`
-- **Vector types: `Vec2f`, `Vec3f`, `Vec4f`, `Vec2d`, `Vec3d`, `Vec4d`** — as array elements and in expressions
-- Array params: `&Array<T>` (read-only), `&mut Array<T>` (read-write) — T can be scalar or Vec type
-- `thread_id()` → CUDA thread index
-- Vec constructors: `Vec3f::new(x, y, z)`, `Vec3f::zero()`, `Vec3f::splat(v)`
-- Vec field access: `v.x`, `v.y`, `v.z`
-- Vec arithmetic: `+`, `-`, `*` (scalar), `/` (scalar), negation
-- Math ops: `+`, `-`, `*`, `/`, `%`, comparisons, compound assignment (`+=`, etc.)
-- Control flow: `if`/`else`, `for` (range-based), `while`
-- Builtins: `sin`, `cos`, `sqrt`, `abs`, `min`, `max`, `floor`, `ceil`, `round`, `exp`, `log`, `pow`, `atan2`
-- Type casts: `x as f32`
-- Method-style math: `x.abs()`, `x.sqrt()`, `x.sin()`, `x.min(y)`
+- All scalar types: `f16`/`f32`/`f64`, `i8`–`i64`, `u8`–`u64`, `bool`
+- Vector types: `Vec2f`/`Vec3f`/`Vec4f` (f32 & f64 variants)
+- Custom structs via `#[forge_struct]`
+- Atomics: `atomic_add`/`min`/`max`/`cas`/`exch`/`sub`/`and`/`or`/`xor`
+- Warp intrinsics: `shfl_down_sync`, `ballot_sync`, `all_sync`, `any_sync`
+- 35+ math builtins: trig, exp/log, erf, cbrt, rsqrt, etc.
+- PRNG: `rand_init`, `randf`, `randi`
+- Thread indices: `thread_id()`, `tid_x()`/`tid_y()`/`tid_z()`
+- Control flow: `if`/`else`, `for`, `while`
 
-### `#[func]` — Device Functions
+### Autodiff — `#[kernel(autodiff)]`
+
+Reverse-mode automatic differentiation. Adjoint kernels generated at compile time.
 
 ```rust
-use forge_macros::{func, kernel};
-use forge_runtime::Array;
-
-#[func]
-fn clamp_val(x: f32, lo: f32, hi: f32) -> f32 {
-    if x < lo { return lo; }
-    if x > hi { return hi; }
-    return x;
-}
-
-#[kernel]
-fn apply_clamp(data: &mut Array<f32>, lo: f32, hi: f32, n: i32) {
+#[kernel(autodiff)]
+fn energy(pos: &Array<f32>, k: f32, rest: f32, out: &mut Array<f32>, n: i32) {
     let i = thread_id();
     if i < n {
-        data[i] = clamp_val(data[i], lo, hi);
+        let dx = pos[i] - rest;
+        out[i] = 0.5 * k * dx * dx;
     }
 }
-
-// Launch with device function sources:
-apply_clamp::launch_with_funcs(
-    &mut data, 0.0, 1.0, n as i32, n, 0,
-    &[clamp_val::CUDA_SOURCE],
-).unwrap();
+// Generates: energy::launch() + energy::launch_adjoint()
 ```
 
-### Launch Variants
+### CUDA Graphs — automatic capture + replay
+
+```
+Without graph: CPU→GPU→sync→CPU→GPU→sync→... (overhead per launch)
+With graph:    CPU→[record]→GPU→GPU→GPU→...→[replay] (one-shot)
+```
+
+Forge auto-captures the simulation loop into a CUDA Graph. **37% speedup** on SPH.
+
+### Multi-dim Arrays
 
 ```rust
-// Standard launch (auto grid/block, sync after)
-kernel::launch(&mut data, n as i32, n, 0)?;
-
-// Async launch (no sync — caller must sync manually)
-kernel::launch_async(&mut data, n as i32, n, 0)?;
-cuda::synchronize(0);
-
-// Custom launch config
-use forge_runtime::cuda::LaunchConfig;
-let config = LaunchConfig {
-    grid_dim: (128, 1, 1),
-    block_dim: (256, 1, 1),
-    shared_mem_bytes: 0,
-};
-kernel::launch_with_config(&mut data, n as i32, 0, config)?;
-
-// With device functions
-kernel::launch_with_funcs(&mut data, n as i32, n, 0, &[my_func::CUDA_SOURCE])?;
+let arr = Array::<f32>::zeros_nd(Shape::new_3d(64, 64, 64), Device::Cuda(0));
+arr.reshape(Shape::new_2d(64, 4096));  // zero-copy
 ```
 
-### `Array<T>` — Typed GPU Arrays
+### Tile Primitives
+
+Cooperative block-level operations using shared memory + warp shuffles:
+- `tile_sum` / `tile_max` / `tile_min` — cooperative reductions
+- `tile_matmul` — shared memory matrix multiply
+- Tensor Core via inline PTX (`mma.sync.m16n8k16`, SM 8.0+)
+
+### Spatial Queries
+
+| Structure | Operations |
+|-----------|-----------|
+| `HashGrid` | Neighbor search (3×3×3 cell query) |
+| `BVH` | Sphere query, closest point, ray cast |
+| `Mesh` | Closest point (Voronoi), ray cast (Möller–Trumbore) |
+
+### Streams & Events
 
 ```rust
-use forge_runtime::{Array, Device, Forge};
-
-// Initialize runtime (auto-detects best device)
-let ctx = Forge::init();
-
-// Create on GPU
-let a = Array::<f32>::zeros(1000, Device::Cuda(0));
-let b = Array::from_vec(vec![1.0f32; 1000], Device::Cuda(0));
-let c = Array::fill(1000, 3.14f32, Device::Cuda(0));
-
-// Transfer
-let cpu_data = a.to_vec();          // GPU → CPU
-let gpu_copy = a.to(Device::Cpu);   // copy to another device
-
-// Metadata
-a.len();      // element count
-a.device();   // Device::Cuda(0)
-
-// Sync all pending GPU operations
-ctx.synchronize();
+let stream = cuda::new_stream(0);
+let child = cuda::fork_stream(&stream);
+// ... launch kernels on child ...
+cuda::join_stream(&stream, &child);  // event-based sync
 ```
 
-### Performance
+### PyTorch Interop
 
-GPU particle simulation (100K particles, 300 timesteps, L40 GPU):
+Zero-copy via `__cuda_array_interface__`:
 
-| Mode | Throughput | Time |
-|------|-----------|------|
-| GPU (CUDA) | **1.09 × 10⁹** particle-steps/s | 0.028s |
-| CPU (single-thread) | 7.47 × 10⁸ particle-steps/s | 0.040s |
-| **Speedup** | **54×** | |
+```python
+from forge_interop import ForgeArray
+fa = ForgeArray.from_torch(tensor)       # torch → forge (zero-copy)
+tensor = fa.to_torch()                    # forge → torch (zero-copy)
+```
 
-### Declarative TOML Simulations
+### Declarative Simulations
 
-No code required — describe your simulation, Forge compiles and runs it:
+Describe physics in TOML, Forge compiles and runs it:
 
 ```toml
 [simulation]
@@ -246,132 +163,49 @@ substeps = 10
 duration = 2.0
 count = 50000
 
-[[fields]]
-name = "position"
-type = "vec3f"
-count = 50000
-init = { type = "random", min = [0.0, 0.0, 0.0], max = [1.0, 2.0, 0.5] }
-
-[spatial]
-type = "hashgrid"
-cell_size = 0.05
-grid_dims = [40, 60, 20]
-
 [[forces]]
 type = "sph_density"
 smoothing_radius = 0.025
 
 [[forces]]
-type = "sph_pressure"
-gas_constant = 2000.0
-rest_density = 1000.0
-
-[[forces]]
-type = "sph_viscosity"
-coefficient = 0.01
-
-[[forces]]
 type = "gravity"
 value = [0.0, -9.81, 0.0]
-
-[[constraints]]
-type = "box"
-min = [-0.1, 0.0, -0.1]
-max = [2.0, 3.0, 0.6]
-restitution = 0.3
 ```
 
 ```bash
 $ forge run dam-break.toml
-🔥 Forge Simulation Runner
-  ⚡ SPH kernel fusion: density + pressure + viscosity → 2 passes (was 3)
-  Pipeline: 4 modules
-✅ Simulation complete!
-  Steps: 20000
-  Time: 4.509s
-  Throughput: 2.22e8 particle-steps/s
+✅ 50K particles, 20K steps, 3.04e8 particle-steps/s
 ```
 
-**Automatic optimizations** (transparent to the user):
-- **Kernel fusion**: SPH density + pressure + viscosity → 2 passes instead of 3
-- **Shared memory tiling**: neighbor data loaded cooperatively into shared memory
-- **GPU hash grid**: full GPU pipeline (cell index → count → prefix sum → scatter)
+**Auto-optimizations** (transparent):
+- Kernel fusion: 3 SPH passes → 2
+- Shared memory tiling for neighbor queries
+- CUDA Graph capture for the simulation loop
+- GPU hash grid with prefix sum
 
-**12 builtin modules**: gravity, integrate, ground_plane, spring, sphere_collider, pin, drag, sph_density, sph_pressure, sph_viscosity, sph_fused, box_collider
+## Architecture
 
-## What's NOT Implemented Yet
+```
+forge-core/      Math types (Vec3f, Mat44f, Quat)
+forge-macros/    #[kernel], #[func], #[forge_struct], #[kernel(autodiff)]
+forge-runtime/   Array<T>, CUDA context, HashGrid, BVH, Mesh, Tape, Tiles
+forge-manifest/  TOML simulation engine, 12 modules, forge CLI
+forge-interop/   PyTorch zero-copy bridge
+```
 
-These are in the [DESIGN.md](DESIGN.md) and [ROADMAP.md](ROADMAP.md) but **not yet in code**:
+## What's Next
 
-- ❌ Method-style launch (`kernel.launch(...)` — currently `kernel::launch(...)`)
-- ❌ Multi-backend (ROCm, Metal, Vulkan)
-- ❌ 2D/3D thread grids (`thread_id_2d()`)
-- ❌ `f16` type
-- ❌ Memory pool / arena allocator
-- ❌ `#[derive(ForgeType)]` for custom structs
-- ❌ CI/CD pipeline
-- ❌ USD/OBJ export from `forge` CLI
-- ❌ Expression language in TOML (inline `expr = "vel.y += ..."`)
-- ❌ Custom kernel escape hatch from TOML (`.rs` file path)
-
-## What IS Implemented
-
-Beyond the core `#[kernel]`/`#[func]` system:
-
-| Feature | Status |
-|---------|--------|
-| `#[kernel(autodiff)]` — reverse-mode AD | ✅ Scalar + Vec3f |
-| `Tape` API — multi-step differentiation | ✅ |
-| `HashGrid` — spatial hash for neighbor queries | ✅ CPU + GPU build |
-| `BVH` — bounding volume hierarchy | ✅ Sphere/closest/ray queries |
-| `Mesh` — triangle mesh with BVH | ✅ Closest point + ray cast |
-| `CsrMatrix` — sparse matrix (CPU + GPU spmv) | ✅ |
-| PyTorch interop (zero-copy DLPack) | ✅ |
-| **Declarative TOML manifests** | ✅ |
-| `forge run sim.toml` CLI | ✅ |
-| 12 builtin simulation modules | ✅ |
-| SPH fluid simulation (GPU) | ✅ |
-| Automatic kernel fusion | ✅ |
-| Shared memory optimization | ✅ |
-
-## Comparison with Warp
-
-| | NVIDIA Warp | Forge (today) |
-|---|---|---|
-| Language | Python | Rust |
-| Error detection | Runtime | **Compile time** |
-| Memory safety | GC | **Ownership (borrow checker)** |
-| Mutability | Any array writable | **`&` vs `&mut` enforced** |
-| Kernel types | Scalars + vec/mat + structs | **Scalars + Vec2/3/4** (custom structs planned) |
-| Device functions | `@wp.func` | `#[func]` ✅ |
-| Autodiff | ✅ Runtime tape | ✅ **Compile-time adjoint generation** |
-| Spatial queries | ✅ BVH, HashGrid, Mesh | ✅ **BVH, HashGrid, Mesh** |
-| Sparse linear algebra | ✅ | ✅ **CsrMatrix (CPU + GPU spmv)** |
-| Declarative sim | ❌ | ✅ **TOML manifests + auto-optimization** |
-| GPU backends | NVIDIA only | NVIDIA only (multi-backend planned) |
-| Target | Human researchers | **AI agents + human review** |
-
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for detailed milestones.
-
-| Milestone | Target | Status |
-|-----------|--------|--------|
-| M1: Core Runtime | Q2 2026 | ✅ **Complete** |
-| M2: Autodiff + Spatial | Q3 2026 | ✅ **Complete** |
-| M3: Multi-backend + FEM | Q4 2026 | 📋 Planned |
-| M4: Declarative Layer | Q1 2027 | 🚧 **In Progress** (SPH fluid, kernel fusion, 12 modules) |
-
-## Contributing
-
-Forge is in early development. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- [ ] NanoVDB volume queries
+- [ ] Multi-backend (ROCm, Metal via wgpu)
+- [ ] CI/CD + crates.io publish
+- [ ] More demos (differentiable physics, cloth, robotics)
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0
 
 ---
 
 <div align="center">
-<i>Built by humans and AI, for AI and humans.</i>
+<i>Built for a world where AI writes the code and compilers catch the mistakes.</i>
 </div>
