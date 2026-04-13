@@ -37,6 +37,7 @@ mod schema;
 mod runner;
 mod validate;
 pub mod modules;
+pub mod expr;
 mod manifest_runner;
 
 pub use schema::*;

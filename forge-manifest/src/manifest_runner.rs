@@ -259,6 +259,7 @@ fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
         }));
 
         // Add non-SPH forces
+        let mut expr_id = 0usize;
         for force in &manifest.forces {
             match force {
                 ForceDef::SphDensity { .. } | ForceDef::SphPressure { .. } | ForceDef::SphViscosity { .. } => {
@@ -273,6 +274,10 @@ fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
                 }
                 ForceDef::Drag { coefficient } => {
                     pipeline.add(Box::new(DragModule { coefficient: *coefficient as f32 }));
+                }
+                ForceDef::Custom { expr } => {
+                    pipeline.add(Box::new(ExprModule::new(expr, expr_id)));
+                    expr_id += 1;
                 }
                 _ => {}
             }
@@ -360,6 +365,11 @@ fn build_pipeline(manifest: &SimManifest) -> Result<Pipeline, String> {
                         grid_dims,
                         particle_mass,
                     }));
+                }
+                ForceDef::Custom { expr } => {
+                    static EXPR_CTR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(100);
+                    let id = EXPR_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    pipeline.add(Box::new(ExprModule::new(expr, id)));
                 }
                 _ => {}
             }

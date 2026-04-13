@@ -1,0 +1,38 @@
+# Vortex — Custom force field using expressions
+# Particles orbit in a vortex pattern, no code needed
+# Run: forge run examples/vortex.toml
+
+[simulation]
+name = "vortex"
+type = "particles"
+dt = 0.001
+substeps = 1
+duration = 5.0
+count = 10000
+
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 10000
+init = { type = "random", min = [-2.0, 0.0, -2.0], max = [2.0, 4.0, 2.0] }
+
+[[fields]]
+name = "velocity"
+type = "vec3f"
+init = { type = "zero" }
+
+# Custom vortex force: particles orbit around Y axis
+# Cross product of (0,1,0) × pos gives tangential direction
+[[forces]]
+type = "custom"
+expr = "vel.x += (-pos.z * 2.0) * dt; vel.z += (pos.x * 2.0) * dt; vel.y += (-0.5) * dt"
+
+# Damping to prevent runaway
+[[forces]]
+type = "drag"
+coefficient = 0.01
+
+[[constraints]]
+type = "ground_plane"
+y = 0.0
+restitution = 0.5

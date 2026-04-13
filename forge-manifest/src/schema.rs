@@ -119,6 +119,10 @@ pub enum ForceDef {
     SphViscosity {
         coefficient: f64,
     },
+    #[serde(rename = "custom")]
+    Custom {
+        expr: String,
+    },
 }
 
 fn default_gravity() -> Vec<f64> { vec![0.0, -9.81, 0.0] }

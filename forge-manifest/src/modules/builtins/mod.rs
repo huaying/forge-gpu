@@ -12,6 +12,7 @@ mod sph_pressure;
 mod sph_viscosity;
 mod sph_fused;
 mod box_collider;
+mod expr_module;
 
 pub use gravity::GravityModule;
 pub use integrate::IntegrateModule;
@@ -25,3 +26,4 @@ pub use sph_pressure::SphPressureModule;
 pub use sph_viscosity::SphViscosityModule;
 pub use sph_fused::SphFusedModule;
 pub use box_collider::BoxColliderModule;
+pub use expr_module::ExprModule;
