@@ -40,13 +40,42 @@ pub fn run_manifest(manifest: &SimManifest) -> Result<crate::SimResult, String> 
     let start = std::time::Instant::now();
     let mut step_count = 0;
 
-    for _step in 0..total_steps {
-        for _sub in 0..substeps {
-            pipeline.step(&mut fields, dt)
-                .map_err(|e| format!("Step {}: {}", step_count, e))?;
-            step_count += 1;
-        }
+    // Step 0: warm-up (compiles all kernels via OnceLock, allocates GPU buffers)
+    for _sub in 0..substeps {
+        pipeline.step(&mut fields, dt)
+            .map_err(|e| format!("Warm-up step {}: {}", step_count, e))?;
+        step_count += 1;
     }
+    // Ensure all GPU work is done before capture
+    let stream = cuda::default_stream(0);
+    stream.synchronize().map_err(|e| format!("Pre-capture sync: {:?}", e))?;
+
+    // Capture CUDA Graph from one step
+    // Modules all use default_stream(0) which is our non-default simulation stream
+    let stream = cuda::default_stream(0);
+
+    stream.begin_capture(cuda::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)
+        .map_err(|e| format!("Graph begin_capture: {:?}", e))?;
+
+    for _sub in 0..substeps {
+        pipeline.step_async(&mut fields, dt)
+            .map_err(|e| format!("Graph capture step: {}", e))?;
+    }
+
+    let graph = stream.end_capture(cuda::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH)
+        .map_err(|e| format!("Graph end_capture: {:?}", e))?
+        .ok_or_else(|| "Graph capture returned None".to_string())?;
+
+    graph.upload().map_err(|e| format!("Graph upload: {:?}", e))?;
+
+    eprintln!("  📊 CUDA Graph captured ({} substeps/launch)", substeps);
+
+    // Replay graph for remaining steps
+    for _step in 1..total_steps {
+        graph.launch().map_err(|e| format!("Graph launch: {:?}", e))?;
+        step_count += substeps as usize;
+    }
+    stream.synchronize().map_err(|e| format!("Final sync: {:?}", e))?;
 
     let elapsed = start.elapsed();
 

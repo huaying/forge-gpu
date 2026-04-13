@@ -6,6 +6,9 @@ use std::sync::{Arc, OnceLock};
 /// Thread-safe CUDA contexts, lazily initialized.
 static CUDA_CONTEXTS: OnceLock<Vec<Arc<CudarcContext>>> = OnceLock::new();
 
+/// Non-default simulation stream (supports graph capture).
+static SIM_STREAM: OnceLock<Arc<CudaStream>> = OnceLock::new();
+
 /// Initialize the CUDA driver (idempotent).
 pub fn init() {
     let _ = CUDA_CONTEXTS.get_or_init(|| {
@@ -47,7 +50,13 @@ pub fn get_context(ordinal: usize) -> Arc<CudarcContext> {
 
 /// Get the default stream for a device.
 pub fn default_stream(ordinal: usize) -> Arc<CudaStream> {
-    get_context(ordinal).default_stream()
+    // Use the simulation stream (non-default, graph-capture compatible)
+    SIM_STREAM.get_or_init(|| {
+        let ctx = get_context(ordinal);
+        // Disable event tracking — it inserts cross-stream events that break CUDA Graph capture
+        unsafe { ctx.disable_event_tracking(); }
+        ctx.new_stream().expect("Failed to create simulation stream")
+    }).clone()
 }
 
 /// Synchronize a CUDA device (waits for all pending operations on default stream).

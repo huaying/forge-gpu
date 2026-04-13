@@ -23,6 +23,7 @@ pub struct SphFusedModule {
 
 // Re-use the hash grid build kernels from sph_density
 // (they use OnceLock so they're compiled once globally)
+static MEMSET_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
 static CELL_INDEX_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
 static COUNT_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
 static PREFIX_SUM_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
@@ -217,12 +218,35 @@ extern "C" __global__ void prefix_sum_fixup(
         let sorted_idx = fields.u32_fields.get_mut("sorted_indices").unwrap() as *mut forge_runtime::Array<u32>;
         let cell_offset = fields.u32_fields.get_mut("cell_offset").unwrap() as *mut forge_runtime::Array<u32>;
 
-        // Zero out cell_count and cell_offset using GPU memset (no allocation)
+        // Zero out cell_count and cell_offset using a kernel (graph-capture safe)
+        let memset_kernel = MEMSET_KERNEL.get_or_init(|| {
+            forge_runtime::CompiledKernel::compile(
+                r#"extern "C" __global__ void memset_u32(unsigned int* data, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) data[i] = 0;
+}"#,
+                "memset_u32",
+            ).expect("compile memset_u32")
+        });
+
+        let config_cells = forge_runtime::cuda::LaunchConfig::for_num_elems(num_cells as u32);
         unsafe {
-            stream.memset_zeros((*cell_count).cuda_slice_mut().unwrap())
-                .map_err(|e| ForgeError::LaunchFailed(format!("memset cell_count: {:?}", e)))?;
-            stream.memset_zeros((*cell_offset).cuda_slice_mut().unwrap())
-                .map_err(|e| ForgeError::LaunchFailed(format!("memset cell_offset: {:?}", e)))?;
+            use forge_runtime::cuda::PushKernelArg;
+            let func = memset_kernel.get_function(0)?;
+            let nc_i32 = num_cells as i32;
+            let mut b = stream.launch_builder(&func);
+            b.arg((*cell_count).cuda_slice_mut().unwrap());
+            b.arg(&nc_i32);
+            b.launch(config_cells).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
+        }
+        unsafe {
+            use forge_runtime::cuda::PushKernelArg;
+            let func = memset_kernel.get_function(0)?;
+            let nc_i32 = num_cells as i32;
+            let mut b = stream.launch_builder(&func);
+            b.arg((*cell_offset).cuda_slice_mut().unwrap());
+            b.arg(&nc_i32);
+            b.launch(config_cells).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
 
         // Step 1: compute cell indices
@@ -262,12 +286,26 @@ extern "C" __global__ void prefix_sum_fixup(
             let block_sums_scanned = fields.u32_fields.get_mut("_psum_block_sums_scanned").unwrap() as *mut forge_runtime::Array<u32>;
             let dummy = fields.u32_fields.get_mut("_psum_dummy").unwrap() as *mut forge_runtime::Array<u32>;
 
-            // Zero temp buffers
+            // Zero temp buffers using kernel (graph-capture safe)
             unsafe {
-                stream.memset_zeros((*block_sums).cuda_slice_mut().unwrap())
-                    .map_err(|e| ForgeError::LaunchFailed(format!("memset block_sums: {:?}", e)))?;
-                stream.memset_zeros((*block_sums_scanned).cuda_slice_mut().unwrap())
-                    .map_err(|e| ForgeError::LaunchFailed(format!("memset block_sums_scanned: {:?}", e)))?;
+                use forge_runtime::cuda::PushKernelArg;
+                let func = memset_kernel.get_function(0)?;
+                let nb_i32 = num_blocks.max(1) as i32;
+                let config_nb = forge_runtime::cuda::LaunchConfig::for_num_elems(num_blocks.max(1) as u32);
+                let mut b = stream.launch_builder(&func);
+                b.arg((*block_sums).cuda_slice_mut().unwrap());
+                b.arg(&nb_i32);
+                b.launch(config_nb).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
+            }
+            unsafe {
+                use forge_runtime::cuda::PushKernelArg;
+                let func = memset_kernel.get_function(0)?;
+                let nb_i32 = num_blocks.max(1) as i32;
+                let config_nb = forge_runtime::cuda::LaunchConfig::for_num_elems(num_blocks.max(1) as u32);
+                let mut b = stream.launch_builder(&func);
+                b.arg((*block_sums_scanned).cuda_slice_mut().unwrap());
+                b.arg(&nb_i32);
+                b.launch(config_nb).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
             }
 
             unsafe {
