@@ -107,10 +107,8 @@ fn main() {
                 println!();
                 let frame_buf = Arc::new(Mutex::new(FrameBuffer::new()));
 
-                // Start HTTP server for viewer page
-                serve::start_http_server(port);
-                // Start WebSocket server for frame streaming
-                serve::start_ws_server(port + 1, Arc::clone(&frame_buf));
+                // Start unified HTTP + WebSocket server (single port)
+                serve::start_server(port, Arc::clone(&frame_buf));
 
                 println!();
                 println!("  Open http://localhost:{} in your browser", port);

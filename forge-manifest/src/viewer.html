@@ -128,9 +128,8 @@ function updateParticles(positionData) {
   geometry.computeBoundingSphere();
 }
 
-// ── WebSocket ──
-const wsPort = parseInt(location.port) + 1;
-const wsUrl = `ws://${location.hostname}:${wsPort}`;
+// ── WebSocket (same port as HTTP) ──
+const wsUrl = `ws://${location.host}`;
 let ws = null;
 let frameCount = 0;
 let lastFpsTime = performance.now();
