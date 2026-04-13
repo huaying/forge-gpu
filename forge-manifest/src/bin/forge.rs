@@ -14,11 +14,30 @@ use std::sync::{Arc, Mutex};
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    // Handle no-argument commands first
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "info" => {
+                print_info();
+                return;
+            }
+            "version" | "--version" | "-v" => {
+                println!("🔥 Forge GPU v{}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            _ => {}
+        }
+    }
+
     if args.len() < 3 {
+        eprintln!("🔥 Forge GPU Compute Framework v{}", env!("CARGO_PKG_VERSION"));
+        eprintln!();
         eprintln!("Usage:");
         eprintln!("  forge run <manifest.toml>              — compile and run simulation");
         eprintln!("  forge run <manifest.toml> --serve 8080 — run with live 3D viewer");
         eprintln!("  forge check <manifest.toml>            — validate without running");
+        eprintln!("  forge info                             — show GPU device info");
+        eprintln!("  forge version                          — show version");
         std::process::exit(1);
     }
 
@@ -180,8 +199,48 @@ fn main() {
         }
 
         other => {
-            eprintln!("Unknown command: '{}'. Use 'run' or 'check'.", other);
+            eprintln!("Unknown command: '{}'. Use 'run', 'check', or 'info'.", other);
             std::process::exit(1);
         }
     }
+}
+
+fn print_info() {
+    println!("🔥 Forge GPU Compute Framework v{}", env!("CARGO_PKG_VERSION"));
+    println!();
+
+    forge_runtime::cuda::init();
+    let count = forge_runtime::cuda::device_count();
+
+    if count == 0 {
+        println!("  ⚠️  No CUDA devices found");
+        println!("  CPU fallback: planned (not yet available)");
+        return;
+    }
+
+    println!("  CUDA Devices: {}", count);
+    println!();
+
+    for i in 0..count {
+        let name = forge_runtime::cuda::device_name(i);
+        let (major, minor) = forge_runtime::cuda::compute_capability(i);
+        let (free, total) = forge_runtime::cuda::mem_info(i);
+
+        println!("  GPU {}: {}", i, name);
+        println!("    Compute Capability: {}.{}", major, minor);
+        println!("    Memory: {:.1} GB free / {:.1} GB total",
+            free as f64 / 1e9, total as f64 / 1e9);
+    }
+
+    println!();
+    println!("  Features:");
+    println!("    ✅ Kernel JIT (nvrtc)");
+    println!("    ✅ CUDA Graphs (auto capture)");
+    println!("    ✅ Autodiff (reverse mode)");
+    println!("    ✅ Multi-dim arrays (1D-4D)");
+    println!("    ✅ Tile primitives (shared mem)");
+    println!("    ✅ Spatial queries (HashGrid, BVH, Mesh)");
+    println!("    ✅ PyTorch interop (__cuda_array_interface__)");
+    println!("    ✅ Declarative TOML manifests");
+    println!("    ✅ WebGL live viewer");
 }

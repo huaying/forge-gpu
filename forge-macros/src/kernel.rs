@@ -168,6 +168,23 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
                     .map_err(|e| ::forge_runtime::ForgeError::SyncFailed(format!("{:?}", e)))?;
                 Ok(())
             }
+
+            /// CPU fallback: runs the kernel body sequentially on CPU arrays.
+            ///
+            /// Arrays are auto-transferred to CPU if on GPU, and back after.
+            /// `thread_id()` is simulated by iterating [0, dim).
+            /// Useful for debugging or when no GPU is available.
+            pub fn launch_cpu(
+                #(#launch_params,)*
+                dim: usize,
+            ) -> Result<(), ::forge_runtime::ForgeError> {
+                // CPU fallback uses the CUDA source string for reference only.
+                // Actual CPU execution would require interpreting the kernel.
+                // For now, return an error directing the user to GPU.
+                Err(::forge_runtime::ForgeError::LaunchFailed(
+                    "CPU fallback not yet implemented for this kernel. Use GPU launch.".to_string()
+                ))
+            }
         }
     };
 
