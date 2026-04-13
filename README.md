@@ -93,16 +93,20 @@ forge-gpu/
 ├── forge/             — Top-level re-exports and prelude
 ├── forge-core/        — Vec2/3/4, Mat22/33/44, Quat, scalar types
 ├── forge-codegen/     — Type mapping utilities (CUDA type catalog)
-├── forge-macros/      — #[kernel] and #[func] proc macros, Rust→CUDA emitter
-└── forge-runtime/     — CUDA context, Array<T>, kernel compilation, launch dispatch
+├── forge-macros/      — #[kernel], #[func], #[kernel(autodiff)] proc macros
+├── forge-runtime/     — CUDA context, Array<T>, HashGrid, BVH, Mesh, CsrMatrix
+├── forge-manifest/    — Declarative TOML manifests, module system, forge CLI
+└── forge-interop/     — PyTorch zero-copy interop (DLPack)
 ```
 
 | Crate | What it does |
 |-------|-------------|
 | **forge-core** | Math types: `Vec2f`/`Vec3f`/`Vec4f`, `Mat33f`/`Mat44f`, `Quatf`, scalar ops. All with operator overloading. |
-| **forge-macros** | `#[kernel]` transforms Rust fn → CUDA C++ `__global__` kernel + host launch wrapper. `#[func]` generates `__device__` functions. |
-| **forge-runtime** | GPU runtime: CUDA context management (via cudarc 0.19), `Array<T>` with GPU memory, nvrtc JIT compilation, kernel launch dispatch. |
+| **forge-macros** | `#[kernel]` transforms Rust fn → CUDA C++ `__global__` kernel + host launch wrapper. `#[func]` generates `__device__` functions. `#[kernel(autodiff)]` generates forward + adjoint kernels. |
+| **forge-runtime** | GPU runtime: CUDA context management (via cudarc 0.19), `Array<T>` with GPU memory, nvrtc JIT compilation, kernel launch dispatch, `HashGrid`, `Bvh`, `Mesh`, `CsrMatrix`, `Tape`. |
+| **forge-manifest** | Declarative TOML simulation engine: schema parsing, validation, 12 builtin modules, pipeline executor, automatic kernel fusion, `forge run/check` CLI. |
 | **forge-codegen** | CUDA type mapping utilities. (Actual codegen lives in forge-macros.) |
+| **forge-interop** | PyTorch tensor ↔ Forge array zero-copy via DLPack capsule protocol. |
 | **forge** | Thin wrapper: `forge::prelude::*` re-exports common types. |
 
 ## What Works Today
@@ -230,22 +234,105 @@ GPU particle simulation (100K particles, 300 timesteps, L40 GPU):
 | CPU (single-thread) | 7.47 × 10⁸ particle-steps/s | 0.040s |
 | **Speedup** | **54×** | |
 
+### Declarative TOML Simulations
+
+No code required — describe your simulation, Forge compiles and runs it:
+
+```toml
+[simulation]
+name = "dam-break"
+dt = 0.0001
+substeps = 10
+duration = 2.0
+count = 50000
+
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 50000
+init = { type = "random", min = [0.0, 0.0, 0.0], max = [1.0, 2.0, 0.5] }
+
+[spatial]
+type = "hashgrid"
+cell_size = 0.05
+grid_dims = [40, 60, 20]
+
+[[forces]]
+type = "sph_density"
+smoothing_radius = 0.025
+
+[[forces]]
+type = "sph_pressure"
+gas_constant = 2000.0
+rest_density = 1000.0
+
+[[forces]]
+type = "sph_viscosity"
+coefficient = 0.01
+
+[[forces]]
+type = "gravity"
+value = [0.0, -9.81, 0.0]
+
+[[constraints]]
+type = "box"
+min = [-0.1, 0.0, -0.1]
+max = [2.0, 3.0, 0.6]
+restitution = 0.3
+```
+
+```bash
+$ forge run dam-break.toml
+🔥 Forge Simulation Runner
+  ⚡ SPH kernel fusion: density + pressure + viscosity → 2 passes (was 3)
+  Pipeline: 4 modules
+✅ Simulation complete!
+  Steps: 20000
+  Time: 4.509s
+  Throughput: 2.22e8 particle-steps/s
+```
+
+**Automatic optimizations** (transparent to the user):
+- **Kernel fusion**: SPH density + pressure + viscosity → 2 passes instead of 3
+- **Shared memory tiling**: neighbor data loaded cooperatively into shared memory
+- **GPU hash grid**: full GPU pipeline (cell index → count → prefix sum → scatter)
+
+**12 builtin modules**: gravity, integrate, ground_plane, spring, sphere_collider, pin, drag, sph_density, sph_pressure, sph_viscosity, sph_fused, box_collider
+
 ## What's NOT Implemented Yet
 
 These are in the [DESIGN.md](DESIGN.md) and [ROADMAP.md](ROADMAP.md) but **not yet in code**:
 
 - ❌ Method-style launch (`kernel.launch(...)` — currently `kernel::launch(...)`)
-- ❌ Autodiff / `Tape` / adjoint generation
-- ❌ Spatial queries (BVH, HashGrid, Mesh)
 - ❌ Multi-backend (ROCm, Metal, Vulkan)
 - ❌ 2D/3D thread grids (`thread_id_2d()`)
-- ❌ Atomic operations
 - ❌ `f16` type
 - ❌ Memory pool / arena allocator
 - ❌ `#[derive(ForgeType)]` for custom structs
 - ❌ CI/CD pipeline
-- ❌ Python interop (PyO3 / DLPack)
-- ❌ Declarative TOML layer
+- ❌ USD/OBJ export from `forge` CLI
+- ❌ Expression language in TOML (inline `expr = "vel.y += ..."`)
+- ❌ Custom kernel escape hatch from TOML (`.rs` file path)
+
+## What IS Implemented
+
+Beyond the core `#[kernel]`/`#[func]` system:
+
+| Feature | Status |
+|---------|--------|
+| `#[kernel(autodiff)]` — reverse-mode AD | ✅ Scalar + Vec3f |
+| `Tape` API — multi-step differentiation | ✅ |
+| `HashGrid` — spatial hash for neighbor queries | ✅ CPU + GPU build |
+| `BVH` — bounding volume hierarchy | ✅ Sphere/closest/ray queries |
+| `Mesh` — triangle mesh with BVH | ✅ Closest point + ray cast |
+| `CsrMatrix` — sparse matrix (CPU + GPU spmv) | ✅ |
+| PyTorch interop (zero-copy DLPack) | ✅ |
+| **Declarative TOML manifests** | ✅ |
+| `forge run sim.toml` CLI | ✅ |
+| 12 builtin simulation modules | ✅ |
+| SPH fluid simulation (GPU) | ✅ |
+| Automatic kernel fusion | ✅ |
+| Shared memory optimization | ✅ |
 
 ## Comparison with Warp
 
@@ -257,8 +344,10 @@ These are in the [DESIGN.md](DESIGN.md) and [ROADMAP.md](ROADMAP.md) but **not y
 | Mutability | Any array writable | **`&` vs `&mut` enforced** |
 | Kernel types | Scalars + vec/mat + structs | **Scalars + Vec2/3/4** (custom structs planned) |
 | Device functions | `@wp.func` | `#[func]` ✅ |
-| Autodiff | ✅ Runtime tape | ❌ Not yet |
-| Spatial queries | ✅ BVH, HashGrid, Mesh | ❌ Not yet |
+| Autodiff | ✅ Runtime tape | ✅ **Compile-time adjoint generation** |
+| Spatial queries | ✅ BVH, HashGrid, Mesh | ✅ **BVH, HashGrid, Mesh** |
+| Sparse linear algebra | ✅ | ✅ **CsrMatrix (CPU + GPU spmv)** |
+| Declarative sim | ❌ | ✅ **TOML manifests + auto-optimization** |
 | GPU backends | NVIDIA only | NVIDIA only (multi-backend planned) |
 | Target | Human researchers | **AI agents + human review** |
 
@@ -269,9 +358,9 @@ See [ROADMAP.md](ROADMAP.md) for detailed milestones.
 | Milestone | Target | Status |
 |-----------|--------|--------|
 | M1: Core Runtime | Q2 2026 | ✅ **Complete** |
-| M2: Autodiff + Spatial | Q3 2026 | 📋 Planned |
+| M2: Autodiff + Spatial | Q3 2026 | ✅ **Complete** |
 | M3: Multi-backend + FEM | Q4 2026 | 📋 Planned |
-| M4: Declarative Layer | Q1 2027 | 💡 Design Phase |
+| M4: Declarative Layer | Q1 2027 | 🚧 **In Progress** (SPH fluid, kernel fusion, 12 modules) |
 
 ## Contributing
 

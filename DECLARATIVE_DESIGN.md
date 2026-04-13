@@ -348,24 +348,26 @@ This means:
 
 ## 6. What Needs to Be Built
 
-### Phase 1: Foundation (now)
-- [ ] Module trait + registry
-- [ ] Field system (named GPU arrays)
-- [ ] Pipeline executor
-- [ ] Builtin modules: gravity, integrate, ground_plane
+### Phase 1: Foundation ✅
+- [x] Module trait + registry
+- [x] Field system (named GPU arrays)
+- [x] Pipeline executor
+- [x] Builtin modules: gravity, integrate, ground_plane
 
-### Phase 2: Spring/Cloth
-- [ ] Topology system (spring pairs, grid generation)
-- [ ] Spring module + bending module
-- [ ] Pin constraint
-- [ ] Sphere/box colliders
-- [ ] Cloth demo manifest
+### Phase 2: Spring/Cloth ✅
+- [x] Topology system (spring pairs, grid generation)
+- [x] Spring module + bending module
+- [x] Pin constraint
+- [x] Sphere/box colliders
+- [x] Cloth demo manifest
 
-### Phase 3: SPH Fluid
-- [ ] HashGrid integration in pipeline
-- [ ] SPH density, pressure, viscosity modules
-- [ ] Box collider for fluid
-- [ ] Dam break demo manifest
+### Phase 3: SPH Fluid ✅
+- [x] GPU HashGrid build in pipeline (counting sort + Blelloch prefix sum)
+- [x] SPH density, pressure, viscosity modules
+- [x] Automatic kernel fusion (3 modules → 2 passes)
+- [x] Shared memory tiling for SPH kernels
+- [x] Box collider for fluid containment
+- [x] Dam break demo manifest (50K particles, 2.22e8 p-steps/s)
 
 ### Phase 4: Custom Kernels
 - [ ] Custom module loader (parse .rs, JIT compile)
@@ -408,8 +410,8 @@ This means:
 
 The declarative language is "done" when:
 
-1. ✅ A simple particle sim runs from TOML (done)
-2. 🔲 A cloth sim runs from TOML (no custom code)
-3. 🔲 A SPH fluid runs from TOML (no custom code)
+1. ✅ A simple particle sim runs from TOML (particle-rain.toml)
+2. ✅ A cloth sim runs from TOML (cloth-on-sphere.toml, no custom code)
+3. ✅ A SPH fluid runs from TOML (dam-break.toml, no custom code)
 4. 🔲 A custom force field works via .rs escape hatch
 5. 🔲 An LLM can generate a valid manifest from "simulate cloth falling on a sphere"

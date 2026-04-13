@@ -138,11 +138,12 @@ fn integrate(
   - `ForgeKernel`: ctypes wrapper for calling compiled Forge .so
   - dtype support: f32, f64, i32, i64
   - Verified: 10M element tensor, zero-copy GPU memory sharing
-- [x] **85 tests passing** (78 Rust + 7 Python)
+- [x] **50 tests passing** (43 Rust + 7 Python)
 
 ### Remaining (nice-to-have)
 
-- [ ] **GPU BVH/HashGrid build** — current builds are CPU; GPU parallel build for large scenes
+- [x] **GPU HashGrid build** — full GPU pipeline in forge-manifest SPH modules
+- [ ] **GPU BVH build** — current BVH build is CPU; GPU parallel build for large scenes
 - [ ] **PyO3 native bindings** — compile Forge kernels as Python extension modules
 - [ ] **torch.autograd.Function wrapper** — end-to-end gradient flow between PyTorch and Forge
 
@@ -233,23 +234,53 @@ heat_diffusion.launch_on(device, grid_size, &mut temp, &neighbors, alpha, dt);
 
 ---
 
-## M4: Declarative Layer (Q1 2027)
+## M4: Declarative Layer (Q1 2027) — 🚧 IN PROGRESS
 
 **Goal:** AI agents generate TOML simulation manifests instead of code.
 
-### Deliverables
+### Delivered (April 13, 2026)
 
-- [ ] **`forge-manifest`**: Declarative simulation spec
+- [x] **`forge-manifest`**: Declarative simulation spec
   - TOML-based simulation description
   - Schema validation at parse time
-  - Compile manifest → optimized simulation binary
-- [ ] **`forge` CLI**
+  - Compile manifest → optimized GPU pipeline
+- [x] **`forge` CLI**
   - `forge run sim.toml` — compile and run
   - `forge check sim.toml` — validate without running
-  - `forge export sim.toml --format usd/obj/vdb`
-- [ ] **Template library**
-  - Pre-built simulation templates (particles, cloth, fluid, rigid body)
-  - Composable building blocks
+- [x] **Module system** — `SimModule` trait, `FieldSet`, `Pipeline` executor
+- [x] **12 builtin modules**:
+  - Forces: gravity, drag, spring, sph_density, sph_pressure, sph_viscosity
+  - Integrators: integrate (symplectic Euler)
+  - Constraints: ground_plane, sphere_collider, box_collider, pin
+  - Optimized: sph_fused (auto-generated from density+pressure+viscosity)
+- [x] **Auto grid topology** — generate spring pairs from grid layout
+- [x] **Spatial acceleration** — `[spatial]` config with GPU hash grid
+  - Full GPU pipeline: cell index → count (atomicAdd) → prefix sum (Blelloch scan) → scatter
+  - Zero CPU round-trips
+- [x] **Automatic kernel fusion** — detects SPH force combo, fuses to 2 passes (was 3)
+- [x] **Shared memory tiling** — cooperative tile loading for SPH neighbor queries
+- [x] **3 demo manifests**: particle-rain, cloth-on-sphere, dam-break
+- [x] **SPH fluid simulation**: 50K particles, dam break, 2.22e8 particle-steps/s on L40
+
+### Performance (dam-break 50K × 20K steps, L40)
+
+| Version | Change | Time | Throughput |
+|---------|--------|------|-----------|
+| v1 | CPU hash grid | 38.8s | 2.58e7 |
+| v2 | GPU hash grid | 16.3s | 6.15e7 |
+| v3 | GPU prefix sum | 14.6s | 6.85e7 |
+| v4 | Kernel fusion | 9.8s | 1.02e8 |
+| v5 | Shared memory | 4.5s | 2.22e8 |
+
+### Remaining
+
+- [ ] **Expression language** — inline `expr = "vel.y += sin(pos.x)"` in TOML
+- [ ] **Custom kernel escape hatch** — `kernel = "path/to/file.rs"` in pipeline
+- [ ] **USD/OBJ export** — `forge export sim.toml --format usd`
+- [ ] **Hot reload** — recompile on manifest file change
+- [ ] **SPH modules** (additional): surface tension, boundary handling
+- [ ] **FLIP fluid** — particles + grid hybrid for large-scale water
+- [ ] **Template library** — pre-built sim configs for common scenarios
 
 ### Demo
 
