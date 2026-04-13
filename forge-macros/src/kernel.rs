@@ -6,7 +6,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse2, ItemFn};
+use syn::{parse2, ItemFn, Block};
 
 use crate::cuda_emit::{generate_cuda_source, parse_param, KernelParam};
 
@@ -35,6 +35,9 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
     let launch_params = build_launch_params(&params);
     let launch_arg_pushes = build_launch_arg_pushes(&params);
     let launch_arg_names = build_launch_arg_names(&params);
+
+    // Build the CPU fallback body
+    let cpu_fallback_body = build_cpu_fallback(&params, &func.block);
 
     let expanded = quote! {
         /// Generated kernel module for `#fn_name_str`.
@@ -178,17 +181,165 @@ pub fn expand_kernel(input: TokenStream) -> Result<TokenStream, syn::Error> {
                 #(#launch_params,)*
                 dim: usize,
             ) -> Result<(), ::forge_runtime::ForgeError> {
-                // CPU fallback uses the CUDA source string for reference only.
-                // Actual CPU execution would require interpreting the kernel.
-                // For now, return an error directing the user to GPU.
-                Err(::forge_runtime::ForgeError::LaunchFailed(
-                    "CPU fallback not yet implemented for this kernel. Use GPU launch.".to_string()
-                ))
+                #cpu_fallback_body
             }
         }
     };
 
     Ok(expanded)
+}
+
+/// Build the CPU fallback body for a kernel.
+///
+/// Generates code that:
+/// 1. Copies GPU arrays to CPU Vecs
+/// 2. Loops over 0..dim, setting thread_id for each iteration
+/// 3. Executes the original Rust kernel body
+/// 4. Copies mutable arrays back to GPU
+fn build_cpu_fallback(params: &[KernelParam], body: &syn::Block) -> TokenStream {
+    // Step 1: Generate array copies from GPU to CPU
+    let mut setup = Vec::new();
+    let mut teardown = Vec::new();
+
+    for p in params {
+        let name = format_ident!("{}", p.name);
+        if p.is_array {
+            if p.is_mutable {
+                // Mutable array: copy to local vec, then copy back
+                let local_name = format_ident!("_cpu_{}", p.name);
+                setup.push(quote! {
+                    let mut #local_name: Vec<_> = #name.to_vec();
+                });
+                teardown.push(quote! {
+                    // Write results back to the original array
+                    let _new_arr = ::forge_runtime::Array::from_vec(#local_name, #name.device());
+                    *#name = _new_arr;
+                });
+            } else {
+                // Read-only array: just copy to local vec
+                let local_name = format_ident!("_cpu_{}", p.name);
+                setup.push(quote! {
+                    let #local_name: Vec<_> = #name.to_vec();
+                });
+            }
+        }
+    }
+
+    // Build array rebinds: wrap Vecs in CpuSlice for i32 indexing
+    let mut array_rebinds = Vec::new();
+    for p in params {
+        let name = format_ident!("{}", p.name);
+        let local_name = format_ident!("_cpu_{}", p.name);
+        if p.is_array {
+            if p.is_mutable {
+                array_rebinds.push(quote! {
+                    let mut #name = _ForgeCpuSliceMut(&mut #local_name[..]);
+                });
+            } else {
+                array_rebinds.push(quote! {
+                    let #name = _ForgeCpuSlice(&#local_name[..]);
+                });
+            }
+        }
+    }
+
+    let kernel_body = &body.stmts;
+
+    quote! {
+        // Wrapper that allows indexing with i32 (like CUDA)
+        struct _ForgeCpuSlice<'a, T>(&'a [T]);
+        impl<T> ::std::ops::Index<i32> for _ForgeCpuSlice<'_, T> {
+            type Output = T;
+            #[inline(always)]
+            fn index(&self, i: i32) -> &T { &self.0[i as usize] }
+        }
+        impl<T> ::std::ops::Index<usize> for _ForgeCpuSlice<'_, T> {
+            type Output = T;
+            #[inline(always)]
+            fn index(&self, i: usize) -> &T { &self.0[i] }
+        }
+
+        struct _ForgeCpuSliceMut<'a, T>(&'a mut [T]);
+        impl<T> ::std::ops::Index<i32> for _ForgeCpuSliceMut<'_, T> {
+            type Output = T;
+            #[inline(always)]
+            fn index(&self, i: i32) -> &T { &self.0[i as usize] }
+        }
+        impl<T> ::std::ops::Index<usize> for _ForgeCpuSliceMut<'_, T> {
+            type Output = T;
+            #[inline(always)]
+            fn index(&self, i: usize) -> &T { &self.0[i] }
+        }
+        impl<T> ::std::ops::IndexMut<i32> for _ForgeCpuSliceMut<'_, T> {
+            #[inline(always)]
+            fn index_mut(&mut self, i: i32) -> &mut T { &mut self.0[i as usize] }
+        }
+        impl<T> ::std::ops::IndexMut<usize> for _ForgeCpuSliceMut<'_, T> {
+            #[inline(always)]
+            fn index_mut(&mut self, i: usize) -> &mut T { &mut self.0[i] }
+        }
+
+        // CPU builtin functions that mirror CUDA builtins
+        #[allow(unused)]
+        #[inline(always)]
+        fn thread_id() -> i32 {
+            _FORGE_CPU_TID.with(|t| *t.borrow())
+        }
+        #[allow(unused)]
+        #[inline(always)]
+        fn sin(x: f32) -> f32 { x.sin() }
+        #[allow(unused)]
+        #[inline(always)]
+        fn cos(x: f32) -> f32 { x.cos() }
+        #[allow(unused)]
+        #[inline(always)]
+        fn sqrt(x: f32) -> f32 { x.sqrt() }
+        #[allow(unused)]
+        #[inline(always)]
+        fn abs(x: f32) -> f32 { x.abs() }
+        #[allow(unused)]
+        #[inline(always)]
+        fn exp(x: f32) -> f32 { x.exp() }
+        #[allow(unused)]
+        #[inline(always)]
+        fn log(x: f32) -> f32 { x.ln() }
+        #[allow(unused)]
+        #[inline(always)]
+        fn pow(x: f32, y: f32) -> f32 { x.powf(y) }
+        #[allow(unused)]
+        #[inline(always)]
+        fn min(x: f32, y: f32) -> f32 { x.min(y) }
+        #[allow(unused)]
+        #[inline(always)]
+        fn max(x: f32, y: f32) -> f32 { x.max(y) }
+        #[allow(unused)]
+        fn atomic_add(arr: &mut _ForgeCpuSliceMut<'_, f32>, idx: i32, val: f32) {
+            arr[idx] += val;
+        }
+
+        ::std::thread_local! {
+            static _FORGE_CPU_TID: ::std::cell::RefCell<i32> = ::std::cell::RefCell::new(0);
+        }
+
+        // Copy arrays to CPU
+        #(#setup)*
+
+        // Rebind array names to indexed wrappers for the kernel body
+        {
+            #(#array_rebinds)*
+
+            for _forge_i in 0..dim {
+                _FORGE_CPU_TID.with(|t| *t.borrow_mut() = _forge_i as i32);
+                // Execute kernel body
+                #(#kernel_body)*
+            }
+        }
+
+        // Copy mutable arrays back
+        #(#teardown)*
+
+        Ok(())
+    }
 }
 
 /// Build the launch function parameter list (Rust types).

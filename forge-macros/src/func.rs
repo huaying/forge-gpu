@@ -40,6 +40,10 @@ pub fn expand_func(input: TokenStream) -> Result<TokenStream, syn::Error> {
 
     let mod_name = format_ident!("{}", fn_name_str);
 
+    // Preserve the original Rust function for CPU fallback
+    let original_sig = &func.sig;
+    let original_body = &func.block;
+
     let expanded = quote! {
         /// Generated device function module for `#fn_name_str`.
         pub mod #mod_name {
@@ -52,6 +56,11 @@ pub fn expand_func(input: TokenStream) -> Result<TokenStream, syn::Error> {
             /// The function name in the CUDA source.
             pub const FUNC_NAME: &str = #fn_name_str;
         }
+
+        /// CPU-callable version of the device function (for CPU fallback).
+        #[allow(unused)]
+        #[inline(always)]
+        #original_sig #original_body
     };
 
     Ok(expanded)
