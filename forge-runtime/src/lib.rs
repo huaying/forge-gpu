@@ -23,6 +23,7 @@ mod mesh;
 mod sparse;
 pub mod tile;
 pub mod radix_sort;
+pub mod cg;
 
 pub use device::*;
 pub use array::*;
@@ -35,3 +36,4 @@ pub use hashgrid::HashGrid;
 pub use bvh::{Bvh, Aabb};
 pub use mesh::Mesh;
 pub use sparse::CsrMatrix;
+pub use cg::{cg_solve, CgResult};
