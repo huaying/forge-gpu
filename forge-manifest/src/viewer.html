@@ -6,7 +6,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #111; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; }
-  canvas { display: block; }
+  canvas { display: block; width: 100vw; height: 100vh; }
   #hud {
     position: fixed; top: 16px; left: 16px; z-index: 10;
     background: rgba(0,0,0,0.7); padding: 12px 16px; border-radius: 8px;
@@ -19,6 +19,7 @@
 </style>
 </head>
 <body>
+<canvas id="canvas"></canvas>
 <div id="hud">
   <div class="title">🔥 Forge</div>
   <div><span class="stat">Particles:</span> <span class="val" id="count">-</span></div>
@@ -27,116 +28,122 @@
   <div id="status">Connecting...</div>
 </div>
 
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
-  }
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+// Resize canvas to window
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
 }
-</script>
-<script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+resize();
+window.addEventListener('resize', resize);
 
-// ── Scene setup ──
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111111);
-scene.fog = new THREE.FogExp2(0x111111, 0.015);
+// Camera state (simple orbit via mouse drag)
+let camAngleX = 0.5;   // rotation around Y axis
+let camAngleY = 0.4;   // tilt
+let camZoom = 5.0;
+let dragging = false;
+let lastMouse = { x: 0, y: 0 };
 
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
-camera.position.set(3, 4, 5);
-camera.lookAt(0, 1, 0);
+canvas.addEventListener('mousedown', (e) => { dragging = true; lastMouse = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener('mouseup', () => { dragging = false; });
+canvas.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  camAngleX += (e.clientX - lastMouse.x) * 0.005;
+  camAngleY += (e.clientY - lastMouse.y) * 0.005;
+  camAngleY = Math.max(-1.5, Math.min(1.5, camAngleY));
+  lastMouse = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('wheel', (e) => {
+  camZoom *= e.deltaY > 0 ? 1.1 : 0.9;
+  camZoom = Math.max(0.5, Math.min(50, camZoom));
+});
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
-document.body.appendChild(renderer.domElement);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 1, 0);
-controls.enableDamping = true;
-controls.dampingFactor = 0.05;
-
-// ── Lighting ──
-scene.add(new THREE.AmbientLight(0x404060, 1.0));
-const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
-dirLight.position.set(5, 10, 5);
-scene.add(dirLight);
-
-// ── Grid floor ──
-const grid = new THREE.GridHelper(20, 20, 0x333333, 0x222222);
-scene.add(grid);
-
-// ── Particles ──
+// Particle data
+let positions = null;
 let particleCount = 0;
-let geometry = null;
-let points = null;
 
-function initParticles(count) {
-  if (points) scene.remove(points);
+function project(x, y, z) {
+  // Rotate around Y axis
+  const cosA = Math.cos(camAngleX), sinA = Math.sin(camAngleX);
+  const rx = x * cosA - z * sinA;
+  const rz = x * sinA + z * cosA;
 
-  particleCount = count;
-  geometry = new THREE.BufferGeometry();
-  const positions = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 3);
+  // Tilt
+  const cosB = Math.cos(camAngleY), sinB = Math.sin(camAngleY);
+  const ry = y * cosB - rz * sinB;
+  const rz2 = y * sinB + rz * cosB;
 
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  // Perspective
+  const fov = 500;
+  const depth = rz2 + camZoom * 3;
+  if (depth < 0.1) return null;
+  const scale = fov / depth;
 
-  const material = new THREE.PointsMaterial({
-    size: 0.03,
-    vertexColors: true,
-    sizeAttenuation: true,
-    transparent: true,
-    opacity: 0.85,
-  });
-
-  points = new THREE.Points(geometry, material);
-  scene.add(points);
+  return {
+    sx: canvas.width / 2 + rx * scale,
+    sy: canvas.height / 2 - ry * scale,
+    depth: depth,
+    scale: scale
+  };
 }
 
-function updateParticles(positionData) {
-  if (!geometry) return;
-  const posAttr = geometry.getAttribute('position');
-  const colAttr = geometry.getAttribute('color');
-  const pos = posAttr.array;
-  const col = colAttr.array;
+function render() {
+  requestAnimationFrame(render);
 
-  // Update positions and compute velocity-based colors
-  for (let i = 0; i < particleCount; i++) {
-    const x = positionData[i * 3];
-    const y = positionData[i * 3 + 1];
-    const z = positionData[i * 3 + 2];
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Velocity approximation from position delta (use height as proxy)
-    const speed = Math.sqrt(x * x + z * z) * 0.2 + y * 0.1;
-    const t = Math.min(speed, 1.0);
-
-    // Color: blue (slow) → cyan → white (fast)
-    col[i * 3]     = 0.2 + t * 0.8;  // R
-    col[i * 3 + 1] = 0.4 + t * 0.6;  // G
-    col[i * 3 + 2] = 0.9;             // B
-
-    pos[i * 3]     = x;
-    pos[i * 3 + 1] = y;
-    pos[i * 3 + 2] = z;
+  // Grid
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 1;
+  for (let i = -5; i <= 5; i++) {
+    const p1 = project(i, 0, -5);
+    const p2 = project(i, 0, 5);
+    const p3 = project(-5, 0, i);
+    const p4 = project(5, 0, i);
+    if (p1 && p2) { ctx.beginPath(); ctx.moveTo(p1.sx, p1.sy); ctx.lineTo(p2.sx, p2.sy); ctx.stroke(); }
+    if (p3 && p4) { ctx.beginPath(); ctx.moveTo(p3.sx, p3.sy); ctx.lineTo(p4.sx, p4.sy); ctx.stroke(); }
   }
 
-  posAttr.needsUpdate = true;
-  colAttr.needsUpdate = true;
-  geometry.computeBoundingSphere();
+  if (!positions || particleCount === 0) return;
+
+  // Draw particles (sample if too many for canvas performance)
+  const maxDraw = 20000;
+  const step = particleCount > maxDraw ? Math.ceil(particleCount / maxDraw) : 1;
+
+  for (let i = 0; i < particleCount; i += step) {
+    const x = positions[i * 3];
+    const y = positions[i * 3 + 1];
+    const z = positions[i * 3 + 2];
+
+    const p = project(x, y, z);
+    if (!p) continue;
+
+    // Color based on height
+    const t = Math.min(Math.max(y / 4, 0), 1);
+    const r = Math.floor(50 + t * 200);
+    const g = Math.floor(120 + t * 135);
+    const b = Math.floor(200 + (1 - t) * 55);
+    const size = Math.max(1, 2 * p.scale / 100);
+
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(p.sx - size/2, p.sy - size/2, size, size);
+  }
 }
+render();
 
 // ── WebSocket (same port as HTTP) ──
 const wsUrl = `ws://${location.host}`;
 let ws = null;
 let frameCount = 0;
+let fpsCount = 0;
 let lastFpsTime = performance.now();
-let fpsFrames = 0;
 
 function connect() {
-  document.getElementById('status').textContent = 'Connecting...';
+  document.getElementById('status').textContent = `Connecting to ${wsUrl}...`;
   ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
@@ -150,19 +157,14 @@ function connect() {
     const frameNum = buf.getUint32(0, true);
     const count = buf.getUint32(4, true);
 
-    if (count !== particleCount) {
-      initParticles(count);
-    }
-
-    // Read positions
-    const positions = new Float32Array(count * 3);
+    particleCount = count;
+    positions = new Float32Array(count * 3);
     for (let i = 0; i < count * 3; i++) {
       positions[i] = buf.getFloat32(8 + i * 4, true);
     }
-    updateParticles(positions);
 
     frameCount = frameNum;
-    fpsFrames++;
+    fpsCount++;
 
     document.getElementById('count').textContent = count.toLocaleString();
     document.getElementById('frame').textContent = frameNum.toLocaleString();
@@ -182,28 +184,11 @@ function connect() {
 
 connect();
 
-// ── Render loop ──
-function animate() {
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-
-  // FPS counter
-  const now = performance.now();
-  if (now - lastFpsTime >= 1000) {
-    document.getElementById('fps').textContent = fpsFrames;
-    fpsFrames = 0;
-    lastFpsTime = now;
-  }
-}
-animate();
-
-// ── Resize ──
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
+// FPS counter
+setInterval(() => {
+  document.getElementById('fps').textContent = fpsCount;
+  fpsCount = 0;
+}, 1000);
 </script>
 </body>
 </html>

@@ -118,7 +118,7 @@ fn handle_connection(mut stream: TcpStream, frame_buf: Arc<Mutex<FrameBuffer>>) 
         // Regular HTTP — serve the viewer page
         use std::io::Write;
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\nConnection: close\r\n\r\n{}",
             VIEWER_HTML.len(),
             VIEWER_HTML
         );
