@@ -567,6 +567,135 @@ __device__ void tile_matmul_f32(float* C, const float* A, const float* B, int M,
 }
 "#;
 
+/// 3D noise utilities (Perlin-style hash noise + curl noise).
+const FORGE_NOISE_UTILS: &str = r#"
+// ── Forge Noise Utilities ──
+
+__device__ float forge_fract(float x) { return x - floorf(x); }
+
+__device__ float forge_hash(float n) {
+    return forge_fract(sinf(n) * 43758.5453123f);
+}
+
+// 3D Perlin-style noise (value noise via hash + smoothstep interpolation)
+__device__ float forge_noise3(float x, float y, float z) {
+    float ix = floorf(x), iy = floorf(y), iz = floorf(z);
+    float fx = x - ix, fy = y - iy, fz = z - iz;
+    // Smoothstep
+    float ux = fx*fx*(3.0f - 2.0f*fx);
+    float uy = fy*fy*(3.0f - 2.0f*fy);
+    float uz = fz*fz*(3.0f - 2.0f*fz);
+    float n = ix + iy * 157.0f + iz * 113.0f;
+    // Trilinear interpolation of hash values
+    float a  = forge_hash(n);
+    float b  = forge_hash(n + 1.0f);
+    float c  = forge_hash(n + 157.0f);
+    float d  = forge_hash(n + 158.0f);
+    float e  = forge_hash(n + 113.0f);
+    float ff = forge_hash(n + 114.0f);
+    float g  = forge_hash(n + 270.0f);
+    float h  = forge_hash(n + 271.0f);
+    float x1 = a + (b-a)*ux + (c-a)*uy + (a-b-c+d)*ux*uy;
+    float x2 = e + (ff-e)*ux + (g-e)*uy + (e-ff-g+h)*ux*uy;
+    return x1 + (x2 - x1)*uz;  // returns [0, 1]
+}
+
+// Curl noise (divergence-free, good for fluid advection)
+__device__ void forge_curl_noise3(float x, float y, float z, float eps,
+                                   float* out_x, float* out_y, float* out_z) {
+    float dx = eps;
+    *out_x = (forge_noise3(x, y+dx, z) - forge_noise3(x, y-dx, z)
+            - forge_noise3(x, y, z+dx) + forge_noise3(x, y, z-dx)) / (2.0f*dx);
+    *out_y = (forge_noise3(x, y, z+dx) - forge_noise3(x, y, z-dx)
+            - forge_noise3(x+dx, y, z) + forge_noise3(x-dx, y, z)) / (2.0f*dx);
+    *out_z = (forge_noise3(x+dx, y, z) - forge_noise3(x-dx, y, z)
+            - forge_noise3(x, y+dx, z) + forge_noise3(x, y-dx, z)) / (2.0f*dx);
+}
+"#;
+
+/// Vector math device utilities (dot, length, normalize, cross, outer).
+const FORGE_VECTOR_MATH_UTILS: &str = r#"
+// ── Forge Vector Math Utilities ──
+
+__device__ float forge_dot3(float ax, float ay, float az,
+                             float bx, float by, float bz) {
+    return ax*bx + ay*by + az*bz;
+}
+
+__device__ float forge_length3(float x, float y, float z) {
+    return sqrtf(x*x + y*y + z*z);
+}
+
+__device__ void forge_normalize3(float x, float y, float z,
+                                  float* ox, float* oy, float* oz) {
+    float len = sqrtf(x*x + y*y + z*z);
+    float inv = (len > 1e-8f) ? 1.0f/len : 0.0f;
+    *ox = x*inv; *oy = y*inv; *oz = z*inv;
+}
+
+__device__ void forge_cross3(float ax, float ay, float az,
+                              float bx, float by, float bz,
+                              float* ox, float* oy, float* oz) {
+    *ox = ay*bz - az*by;
+    *oy = az*bx - ax*bz;
+    *oz = ax*by - ay*bx;
+}
+
+__device__ void forge_outer3(float ax, float ay, float az,
+                              float bx, float by, float bz, float* m) {
+    // 3x3 outer product, row-major
+    m[0]=ax*bx; m[1]=ax*by; m[2]=ax*bz;
+    m[3]=ay*bx; m[4]=ay*by; m[5]=ay*bz;
+    m[6]=az*bx; m[7]=az*by; m[8]=az*bz;
+}
+"#;
+
+/// Quaternion device utilities (slerp, axis-angle, rotate).
+const FORGE_QUAT_UTILS: &str = r#"
+// ── Forge Quaternion Utilities ──
+
+__device__ void forge_quat_slerp(float aw, float ax, float ay, float az,
+                                  float bw, float bx, float by, float bz,
+                                  float t,
+                                  float* ow, float* ox, float* oy, float* oz) {
+    float d = aw*bw + ax*bx + ay*by + az*bz;
+    if (d < 0.0f) { bw=-bw; bx=-bx; by=-by; bz=-bz; d=-d; }
+    if (d > 0.9995f) {
+        *ow = aw + t*(bw-aw); *ox = ax + t*(bx-ax);
+        *oy = ay + t*(by-ay); *oz = az + t*(bz-az);
+    } else {
+        float theta = acosf(d);
+        float sn = sinf(theta);
+        float wa = sinf((1.0f-t)*theta)/sn;
+        float wb = sinf(t*theta)/sn;
+        *ow = wa*aw + wb*bw; *ox = wa*ax + wb*bx;
+        *oy = wa*ay + wb*by; *oz = wa*az + wb*bz;
+    }
+    // normalize
+    float len = sqrtf((*ow)*(*ow) + (*ox)*(*ox) + (*oy)*(*oy) + (*oz)*(*oz));
+    if (len > 1e-8f) { *ow/=len; *ox/=len; *oy/=len; *oz/=len; }
+}
+
+__device__ void forge_quat_from_axis_angle(float ax, float ay, float az, float angle,
+                                            float* qw, float* qx, float* qy, float* qz) {
+    float half = angle * 0.5f;
+    float s = sinf(half);
+    *qw = cosf(half); *qx = ax*s; *qy = ay*s; *qz = az*s;
+}
+
+__device__ void forge_quat_rotate(float qw, float qx, float qy, float qz,
+                                   float vx, float vy, float vz,
+                                   float* ox, float* oy, float* oz) {
+    // q * v * q^-1 (optimized form)
+    float tx = 2.0f*(qy*vz - qz*vy);
+    float ty = 2.0f*(qz*vx - qx*vz);
+    float tz = 2.0f*(qx*vy - qy*vx);
+    *ox = vx + qw*tx + (qy*tz - qz*ty);
+    *oy = vy + qw*ty + (qz*tx - qx*tz);
+    *oz = vz + qw*tz + (qx*ty - qy*tx);
+}
+"#;
+
 /// Tensor Core tile_matmul_tc via inline PTX (SM 8.0+).
 const FORGE_TC_UTILS: &str = r#"
 // ── Tensor Core GEMM via inline PTX (SM 8.0+) ──
@@ -672,8 +801,11 @@ pub fn generate_cuda_source(
     let preamble = generate_struct_preamble(params, body_stmts);
     cuda.push_str(&preamble);
 
-    // Utility device functions (random, tile, etc.)
+    // Utility device functions (random, tile, noise, vector math, quaternion, etc.)
     cuda.push_str(FORGE_DEVICE_UTILS);
+    cuda.push_str(FORGE_NOISE_UTILS);
+    cuda.push_str(FORGE_VECTOR_MATH_UTILS);
+    cuda.push_str(FORGE_QUAT_UTILS);
     cuda.push_str(FORGE_TILE_UTILS);
 
     // Kernel signature
@@ -1165,6 +1297,19 @@ fn builtin_to_cuda(name: &str) -> String {
         "rand_init" => "forge_rand_init".to_string(),
         "rand_f32" | "randf" => "forge_randf".to_string(),
         "rand_u32" | "randi" => "forge_randi".to_string(),
+        // Noise
+        "noise3" | "perlin" => "forge_noise3".to_string(),
+        "curl_noise3" => "forge_curl_noise3".to_string(),
+        // Vector math
+        "dot3" => "forge_dot3".to_string(),
+        "length3" => "forge_length3".to_string(),
+        "normalize3" => "forge_normalize3".to_string(),
+        "cross3" => "forge_cross3".to_string(),
+        "outer3" => "forge_outer3".to_string(),
+        // Quaternion
+        "quat_slerp" => "forge_quat_slerp".to_string(),
+        "quat_from_axis_angle" => "forge_quat_from_axis_angle".to_string(),
+        "quat_rotate" => "forge_quat_rotate".to_string(),
         // Tile primitives (cooperative block-level)
         "tile_load" | "tile_load_f32" => "tile_load_f32".to_string(),
         "tile_store" | "tile_store_f32" => "tile_store_f32".to_string(),
@@ -1279,6 +1424,20 @@ mod tests {
         // Warp
         assert_eq!(builtin_to_cuda("warp_shfl_down"), "__shfl_down_sync");
         assert_eq!(builtin_to_cuda("syncthreads"), "__syncthreads");
+        // Noise
+        assert_eq!(builtin_to_cuda("noise3"), "forge_noise3");
+        assert_eq!(builtin_to_cuda("perlin"), "forge_noise3");
+        assert_eq!(builtin_to_cuda("curl_noise3"), "forge_curl_noise3");
+        // Vector math
+        assert_eq!(builtin_to_cuda("dot3"), "forge_dot3");
+        assert_eq!(builtin_to_cuda("length3"), "forge_length3");
+        assert_eq!(builtin_to_cuda("normalize3"), "forge_normalize3");
+        assert_eq!(builtin_to_cuda("cross3"), "forge_cross3");
+        assert_eq!(builtin_to_cuda("outer3"), "forge_outer3");
+        // Quaternion
+        assert_eq!(builtin_to_cuda("quat_slerp"), "forge_quat_slerp");
+        assert_eq!(builtin_to_cuda("quat_from_axis_angle"), "forge_quat_from_axis_angle");
+        assert_eq!(builtin_to_cuda("quat_rotate"), "forge_quat_rotate");
     }
 
     #[test]

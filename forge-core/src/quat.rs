@@ -48,7 +48,8 @@ impl<T: Float> Quat<T> {
     /// Create a quaternion from an axis and angle (radians).
     #[inline]
     pub fn from_axis_angle(axis: Vec3<T>, angle: T) -> Self {
-        let half = angle * (T::ONE / (T::ONE + T::ONE));
+        let two = T::ONE + T::ONE;
+        let half = angle / two;
         let s = half.sin();
         let c = half.cos();
         Self {
@@ -89,12 +90,19 @@ impl<T: Float> Quat<T> {
         }
     }
 
+    /// Rotate a 3D vector by this quaternion (alias for `rotate`).
+    #[inline]
+    pub fn rotate_vec(&self, v: Vec3<T>) -> Vec3<T> {
+        self.rotate(v)
+    }
+
     /// Rotate a 3D vector by this quaternion.
     #[inline]
     pub fn rotate(self, v: Vec3<T>) -> Vec3<T> {
         // q * v * q^-1, optimized
         let qv = Vec3::new(self.x, self.y, self.z);
-        let t = qv.cross(v) * (T::ONE + T::ONE);
+        let two = T::ONE + T::ONE;
+        let t = qv.cross(v) * two;
         v + t * self.w + qv.cross(t)
     }
 
@@ -117,6 +125,108 @@ impl<T: Float> Quat<T> {
             Vec3::new(two * (xy - wz), T::ONE - two * (xx + zz), two * (yz + wx)),
             Vec3::new(two * (xz + wy), two * (yz - wx), T::ONE - two * (xx + yy)),
         )
+    }
+
+    /// Spherical linear interpolation between two unit quaternions.
+    pub fn slerp(a: Quat<T>, b: Quat<T>, t: T) -> Quat<T> {
+        let mut d = a.dot(b);
+        // If dot is negative, negate one quaternion to take the shorter arc
+        let mut b = b;
+        if d < T::ZERO {
+            b = -b;
+            d = T::ZERO - d;
+        }
+        // Build threshold ~0.9995 from T::ONE
+        // 0.9995 = 1 - 0.0005 = 1 - 1/2000
+        // We'll use a generous threshold via repeated halving
+        let two = T::ONE + T::ONE;
+        let ten = two * two * two + two; // 10
+        let hundred = ten * ten;
+        let two_thousand = hundred * ten * two;
+        let threshold = T::ONE - T::ONE / two_thousand;
+
+        if d > threshold {
+            // Linear interpolation for very close quaternions
+            let one_t = T::ONE - t;
+            Quat::new(
+                one_t * a.x + t * b.x,
+                one_t * a.y + t * b.y,
+                one_t * a.z + t * b.z,
+                one_t * a.w + t * b.w,
+            ).normalize()
+        } else {
+            let theta = d.acos_safe();
+            let sin_theta = theta.sin();
+            let wa = ((T::ONE - t) * theta).sin() / sin_theta;
+            let wb = (t * theta).sin() / sin_theta;
+            Quat::new(
+                wa * a.x + wb * b.x,
+                wa * a.y + wb * b.y,
+                wa * a.z + wb * b.z,
+                wa * a.w + wb * b.w,
+            ).normalize()
+        }
+    }
+
+    /// Create a quaternion from Euler angles (roll, pitch, yaw) in radians.
+    /// Uses ZYX convention (yaw around Z, pitch around Y, roll around X).
+    pub fn from_euler(roll: T, pitch: T, yaw: T) -> Quat<T> {
+        let two = T::ONE + T::ONE;
+        let hr = roll / two;
+        let hp = pitch / two;
+        let hy = yaw / two;
+        let (sr, cr) = (hr.sin(), hr.cos());
+        let (sp, cp) = (hp.sin(), hp.cos());
+        let (sy, cy) = (hy.sin(), hy.cos());
+        Quat::new(
+            sr * cp * cy - cr * sp * sy,  // x
+            cr * sp * cy + sr * cp * sy,  // y
+            cr * cp * sy - sr * sp * cy,  // z
+            cr * cp * cy + sr * sp * sy,  // w
+        )
+    }
+
+    /// Convert to Euler angles (roll, pitch, yaw) in radians.
+    /// Uses ZYX convention. Returns (roll, pitch, yaw).
+    pub fn to_euler(&self) -> (T, T, T) {
+        let two = T::ONE + T::ONE;
+        // Roll (x-axis)
+        let sinr_cosp = two * (self.w * self.x + self.y * self.z);
+        let cosr_cosp = T::ONE - two * (self.x * self.x + self.y * self.y);
+        let roll = sinr_cosp.atan2(cosr_cosp);
+
+        // Pitch (y-axis)
+        let sinp = two * (self.w * self.y - self.z * self.x);
+        let pitch = sinp.asin_safe();
+
+        // Yaw (z-axis)
+        let siny_cosp = two * (self.w * self.z + self.x * self.y);
+        let cosy_cosp = T::ONE - two * (self.y * self.y + self.z * self.z);
+        let yaw = siny_cosp.atan2(cosy_cosp);
+
+        (roll, pitch, yaw)
+    }
+
+    /// Extract the rotation axis and angle from a unit quaternion.
+    /// Returns (axis, angle) where angle is in radians [0, 2π).
+    /// If the rotation is near zero, returns (Vec3(1,0,0), 0).
+    pub fn to_axis_angle(self) -> (Vec3<T>, T) {
+        let q = self.normalize();
+        let two = T::ONE + T::ONE;
+        let w_clamped = q.w.min(T::ONE).max(T::ZERO - T::ONE);
+        let angle = two * w_clamped.acos_safe();
+        let sin_half = (T::ONE - w_clamped * w_clamped).sqrt();
+        // Epsilon ≈ 1e-7 built from generic arithmetic
+        let ten = (T::ONE + T::ONE) * (T::ONE + T::ONE) + T::ONE + T::ONE +
+            T::ONE + T::ONE + T::ONE + T::ONE; // 10
+        let million = ten * ten * ten * ten * ten * ten; // 1e6
+        let eps = T::ONE / (million * ten); // 1e-7
+        if sin_half > eps {
+            let inv = T::ONE / sin_half;
+            (Vec3::new(q.x * inv, q.y * inv, q.z * inv), angle)
+        } else {
+            (Vec3::new(T::ONE, T::ZERO, T::ZERO), T::ZERO)
+        }
     }
 }
 
@@ -220,5 +330,63 @@ mod tests {
         let r = q * q;
         assert!((r.w - 1.0).abs() < 1e-6);
         assert!(r.x.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_slerp_endpoints() {
+        let a = Quat::<f32>::identity();
+        let b = Quat::from_axis_angle(Vec3::new(0.0, 0.0, 1.0), std::f32::consts::FRAC_PI_2);
+        // slerp at t=0 should give a
+        let s0 = Quat::slerp(a, b, 0.0);
+        assert!((s0.w - a.w).abs() < 1e-5);
+        assert!((s0.x - a.x).abs() < 1e-5);
+        // slerp at t=1 should give b
+        let s1 = Quat::slerp(a, b, 1.0);
+        assert!((s1.w - b.w).abs() < 1e-5);
+        assert!((s1.z - b.z).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_axis_angle_roundtrip() {
+        let axis = Vec3::new(0.0f32, 1.0, 0.0);
+        let angle = 1.23f32;
+        let q = Quat::from_axis_angle(axis, angle);
+        let (ax2, ang2) = q.to_axis_angle();
+        assert!((ax2.x - axis.x).abs() < 1e-5);
+        assert!((ax2.y - axis.y).abs() < 1e-5);
+        assert!((ax2.z - axis.z).abs() < 1e-5);
+        assert!((ang2 - angle).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_euler_roundtrip() {
+        let roll = 0.3f32;
+        let pitch = 0.5f32;
+        let yaw = 0.7f32;
+        let q = Quat::from_euler(roll, pitch, yaw);
+        let (r2, p2, y2) = q.to_euler();
+        assert!((r2 - roll).abs() < 1e-5, "roll: {} vs {}", r2, roll);
+        assert!((p2 - pitch).abs() < 1e-5, "pitch: {} vs {}", p2, pitch);
+        assert!((y2 - yaw).abs() < 1e-5, "yaw: {} vs {}", y2, yaw);
+    }
+
+    #[test]
+    fn test_rotate_vec() {
+        let q = Quat::from_axis_angle(Vec3::new(0.0f32, 0.0, 1.0), std::f32::consts::PI);
+        let v = Vec3::new(1.0f32, 0.0, 0.0);
+        let r = q.rotate_vec(&v);
+        assert!((r.x - (-1.0)).abs() < 1e-5);
+        assert!((r.y - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_inverse() {
+        let q = Quat::from_axis_angle(Vec3::new(1.0f32, 0.0, 0.0), 1.0);
+        let qi = q.inverse();
+        let product = q * qi;
+        assert!((product.w - 1.0).abs() < 1e-5);
+        assert!(product.x.abs() < 1e-5);
+        assert!(product.y.abs() < 1e-5);
+        assert!(product.z.abs() < 1e-5);
     }
 }

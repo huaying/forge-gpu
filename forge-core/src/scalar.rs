@@ -69,6 +69,9 @@ pub trait Float: Scalar {
     fn max(self, other: Self) -> Self;
     fn clamp(self, lo: Self, hi: Self) -> Self;
     fn lerp(self, other: Self, t: Self) -> Self;
+    fn acos_safe(self) -> Self;
+    fn asin_safe(self) -> Self;
+    fn atan2(self, other: Self) -> Self;
 }
 
 impl Float for f32 {
@@ -80,6 +83,9 @@ impl Float for f32 {
     #[inline] fn max(self, other: Self) -> Self { f32::max(self, other) }
     #[inline] fn clamp(self, lo: Self, hi: Self) -> Self { f32::clamp(self, lo, hi) }
     #[inline] fn lerp(self, other: Self, t: Self) -> Self { self + (other - self) * t }
+    #[inline] fn acos_safe(self) -> Self { f32::acos(self.clamp(-1.0, 1.0)) }
+    #[inline] fn asin_safe(self) -> Self { f32::asin(self.clamp(-1.0, 1.0)) }
+    #[inline] fn atan2(self, other: Self) -> Self { f32::atan2(self, other) }
 }
 
 impl Float for f64 {
@@ -91,6 +97,9 @@ impl Float for f64 {
     #[inline] fn max(self, other: Self) -> Self { f64::max(self, other) }
     #[inline] fn clamp(self, lo: Self, hi: Self) -> Self { f64::clamp(self, lo, hi) }
     #[inline] fn lerp(self, other: Self, t: Self) -> Self { self + (other - self) * t }
+    #[inline] fn acos_safe(self) -> Self { f64::acos(self.clamp(-1.0, 1.0)) }
+    #[inline] fn asin_safe(self) -> Self { f64::asin(self.clamp(-1.0, 1.0)) }
+    #[inline] fn atan2(self, other: Self) -> Self { f64::atan2(self, other) }
 }
 
 #[cfg(test)]
