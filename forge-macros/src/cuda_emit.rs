@@ -109,14 +109,24 @@ fn parse_type(name: &str, ty: &Type) -> Result<KernelParam, syn::Error> {
 /// Map a Rust scalar type name to its CUDA equivalent.
 fn scalar_to_cuda(type_name: &str) -> Result<&'static str, syn::Error> {
     match type_name {
+        // Floating point
+        "f16" | "half" => Ok("__half"),
         "f32" => Ok("float"),
         "f64" => Ok("double"),
+        // Signed integers
+        "i8" => Ok("signed char"),
+        "i16" => Ok("short"),
         "i32" => Ok("int"),
         "i64" => Ok("long long"),
+        // Unsigned integers
+        "u8" => Ok("unsigned char"),
+        "u16" => Ok("unsigned short"),
         "u32" => Ok("unsigned int"),
         "u64" => Ok("unsigned long long"),
+        // Other
         "bool" => Ok("bool"),
         "usize" => Ok("unsigned long long"),
+        "isize" => Ok("long long"),
         other => Err(syn::Error::new(
             Span::call_site(),
             format!("unsupported scalar type '{}' in #[kernel]", other),
@@ -1051,7 +1061,12 @@ mod tests {
     fn test_scalar_to_cuda() {
         assert_eq!(scalar_to_cuda("f32").unwrap(), "float");
         assert_eq!(scalar_to_cuda("f64").unwrap(), "double");
+        assert_eq!(scalar_to_cuda("f16").unwrap(), "__half");
+        assert_eq!(scalar_to_cuda("i8").unwrap(), "signed char");
+        assert_eq!(scalar_to_cuda("i16").unwrap(), "short");
         assert_eq!(scalar_to_cuda("i32").unwrap(), "int");
+        assert_eq!(scalar_to_cuda("u8").unwrap(), "unsigned char");
+        assert_eq!(scalar_to_cuda("u16").unwrap(), "unsigned short");
         assert_eq!(scalar_to_cuda("u32").unwrap(), "unsigned int");
         assert_eq!(scalar_to_cuda("bool").unwrap(), "bool");
     }

@@ -105,13 +105,46 @@ class ForgeArray:
 
     Holds a raw CUDA pointer and metadata, enabling zero-copy
     sharing with PyTorch tensors.
+
+    Supports:
+    - __cuda_array_interface__ (CuPy, PyTorch, Numba interop)
+    - DLPack protocol (torch.from_dlpack / to_dlpack)
     """
 
-    def __init__(self, data_ptr: int, numel: int, dtype: str = "f32", device: int = 0):
+    def __init__(self, data_ptr: int, numel: int, shape: Optional[Tuple[int, ...]] = None,
+                 dtype: str = "f32", device: int = 0):
         self.data_ptr = data_ptr
         self.numel = numel
+        self.shape_tuple = shape or (numel,)
         self.dtype = dtype
         self.device = device
+
+    @property
+    def __cuda_array_interface__(self):
+        """Standard CUDA array interface for zero-copy interop.
+
+        Supported by PyTorch, CuPy, Numba, and other GPU frameworks.
+        See: https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
+        """
+        typestr_map = {
+            "f32": "<f4",
+            "f64": "<f8",
+            "i32": "<i4",
+            "i64": "<i8",
+            "u32": "<u4",
+            "u64": "<u8",
+            "f16": "<f2",
+        }
+        typestr = typestr_map.get(self.dtype, "<f4")
+
+        return {
+            "version": 3,
+            "shape": self.shape_tuple,
+            "typestr": typestr,
+            "data": (self.data_ptr, False),  # (ptr, read_only)
+            "strides": None,  # C-contiguous
+            "stream": None,   # default stream
+        }
 
     @classmethod
     def from_torch(cls, tensor: torch.Tensor) -> "ForgeArray":
@@ -124,6 +157,7 @@ class ForgeArray:
             torch.float64: "f64",
             torch.int32: "i32",
             torch.int64: "i64",
+            torch.float16: "f16",
         }
         dtype = dtype_map.get(tensor.dtype, "f32")
         device = tensor.device.index or 0
@@ -131,6 +165,7 @@ class ForgeArray:
         return cls(
             data_ptr=tensor.data_ptr(),
             numel=tensor.numel(),
+            shape=tuple(tensor.shape),
             dtype=dtype,
             device=device,
         )
@@ -138,21 +173,13 @@ class ForgeArray:
     def to_torch(self, shape: Optional[Tuple[int, ...]] = None) -> torch.Tensor:
         """Create a PyTorch tensor view of this ForgeArray (zero-copy).
 
-        Note: This creates a new tensor backed by the same GPU memory.
+        Uses __cuda_array_interface__ for standard interop.
         The ForgeArray (and underlying allocation) must stay alive.
         """
-        if shape is None:
-            shape = (self.numel,)
-
-        dtype_map = {
-            "f32": torch.float32,
-            "f64": torch.float64,
-            "i32": torch.int32,
-            "i64": torch.int64,
-        }
-        torch_dtype = dtype_map.get(self.dtype, torch.float32)
-
-        return forge_ptr_to_tensor(self.data_ptr, shape, torch_dtype, self.device)
+        if shape is not None:
+            self.shape_tuple = shape
+        # PyTorch can consume __cuda_array_interface__ directly
+        return torch.as_tensor(self, device=f'cuda:{self.device}')
 
 
 class ForgeKernel:
