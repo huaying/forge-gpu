@@ -118,3 +118,61 @@ pub use cudarc::nvrtc::Ptx;
 
 /// Re-exported context type.
 pub type CudaContext = CudarcContext;
+
+// ── Multi-GPU API ──
+
+/// Get a stream for launching kernels on a specific GPU device.
+///
+/// This enables multi-GPU workflows by allowing kernel launches on
+/// different devices. Each device gets its own default stream.
+///
+/// # Example
+/// ```ignore
+/// let stream = forge_runtime::cuda::launch_on(1);
+/// // Now configure and launch kernels using this stream on device 1
+/// ```
+pub fn launch_on(ordinal: usize) -> Arc<CudaStream> {
+    init();
+    // Create a dedicated stream for this device
+    let ctx = get_context(ordinal);
+    ctx.new_stream().expect("Failed to create stream for device")
+}
+
+/// Copy an array to a different GPU device.
+///
+/// The data is transferred through host memory (staging copy).
+/// For maximum throughput, use CUDA P2P with NVLink or PCI-e.
+///
+/// Returns a new Array on the destination device with the same shape.
+pub fn copy_peer<T: Copy + Default + Clone + DeviceRepr + cudarc::driver::ValidAsZeroBits>(
+    src: &crate::Array<T>,
+    dst_ordinal: usize,
+) -> crate::Array<T> {
+    let data = src.to_vec();
+    let mut arr = crate::Array::from_vec(data, crate::Device::Cuda(dst_ordinal));
+    arr.reshape(*src.shape());
+    arr
+}
+
+/// Enable peer-to-peer memory access between two GPU devices.
+///
+/// Returns Ok(true) if P2P was enabled, Ok(false) if same device or not supported.
+pub fn enable_peer_access(dev_a: usize, dev_b: usize) -> Result<bool, crate::ForgeError> {
+    if dev_a == dev_b {
+        return Ok(false);
+    }
+    init();
+    // P2P requires cuCtxEnablePeerAccess which cudarc doesn't expose directly.
+    // For now, return false. Full P2P will use raw driver calls when multi-GPU is tested.
+    Ok(false)
+}
+
+/// Check if peer-to-peer access is possible between two devices.
+pub fn can_access_peer(dev_a: usize, dev_b: usize) -> bool {
+    if dev_a == dev_b {
+        return true;
+    }
+    // cudarc 0.19 doesn't expose cuDeviceCanAccessPeer directly.
+    // Return false for different devices until raw driver API is integrated.
+    false
+}
