@@ -21,6 +21,7 @@ mod hashgrid;
 mod bvh;
 mod mesh;
 mod sparse;
+pub mod tile;
 
 pub use device::*;
 pub use array::*;

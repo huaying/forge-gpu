@@ -499,6 +499,74 @@ __device__ float forge_randf_range(unsigned int* state, float lo, float hi) {
 }
 "#;
 
+/// Tile cooperative primitives (shared memory + warp reductions).
+const FORGE_TILE_UTILS: &str = r#"
+// ── Tile cooperative primitives ──
+
+__device__ float tile_sum_f32(float* shared, int tile_size) {
+    float local_sum = 0.0f;
+    for (int i = threadIdx.x; i < tile_size; i += blockDim.x) {
+        local_sum += shared[i];
+    }
+    for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+        local_sum += __shfl_down_sync(0xFFFFFFFF, local_sum, offset);
+    }
+    __shared__ float _ts_ws[32];
+    int lane = threadIdx.x % warpSize;
+    int warp_id = threadIdx.x / warpSize;
+    if (lane == 0) _ts_ws[warp_id] = local_sum;
+    __syncthreads();
+    if (warp_id == 0) {
+        local_sum = (lane < (blockDim.x + warpSize - 1) / warpSize) ? _ts_ws[lane] : 0.0f;
+        for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+            local_sum += __shfl_down_sync(0xFFFFFFFF, local_sum, offset);
+        }
+    }
+    return local_sum;
+}
+
+__device__ float tile_max_f32(float* shared, int tile_size) {
+    float val = -1e38f;
+    for (int i = threadIdx.x; i < tile_size; i += blockDim.x) val = fmaxf(val, shared[i]);
+    for (int o = warpSize/2; o > 0; o >>= 1) val = fmaxf(val, __shfl_down_sync(0xFFFFFFFF, val, o));
+    __shared__ float _tmx_ws[32];
+    int ln = threadIdx.x % warpSize, wi = threadIdx.x / warpSize;
+    if (ln == 0) _tmx_ws[wi] = val;
+    __syncthreads();
+    if (wi == 0) {
+        val = (ln < (blockDim.x + warpSize - 1) / warpSize) ? _tmx_ws[ln] : -1e38f;
+        for (int o = warpSize/2; o > 0; o >>= 1) val = fmaxf(val, __shfl_down_sync(0xFFFFFFFF, val, o));
+    }
+    return val;
+}
+
+__device__ float tile_min_f32(float* shared, int tile_size) {
+    float val = 1e38f;
+    for (int i = threadIdx.x; i < tile_size; i += blockDim.x) val = fminf(val, shared[i]);
+    for (int o = warpSize/2; o > 0; o >>= 1) val = fminf(val, __shfl_down_sync(0xFFFFFFFF, val, o));
+    __shared__ float _tmn_ws[32];
+    int ln = threadIdx.x % warpSize, wi = threadIdx.x / warpSize;
+    if (ln == 0) _tmn_ws[wi] = val;
+    __syncthreads();
+    if (wi == 0) {
+        val = (ln < (blockDim.x + warpSize - 1) / warpSize) ? _tmn_ws[ln] : 1e38f;
+        for (int o = warpSize/2; o > 0; o >>= 1) val = fminf(val, __shfl_down_sync(0xFFFFFFFF, val, o));
+    }
+    return val;
+}
+
+__device__ void tile_matmul_f32(float* C, const float* A, const float* B, int M, int N, int K) {
+    int total = M * N;
+    for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
+        int row = idx / N, col = idx % N;
+        float sum = 0.0f;
+        for (int k = 0; k < K; k++) sum += A[row * K + k] * B[k * N + col];
+        C[row * N + col] += sum;
+    }
+    __syncthreads();
+}
+"#;
+
 pub fn generate_cuda_source(
     kernel_name: &str,
     params: &[KernelParam],
@@ -510,8 +578,9 @@ pub fn generate_cuda_source(
     let preamble = generate_struct_preamble(params, body_stmts);
     cuda.push_str(&preamble);
 
-    // Utility device functions (random, etc.)
+    // Utility device functions (random, tile, etc.)
     cuda.push_str(FORGE_DEVICE_UTILS);
+    cuda.push_str(FORGE_TILE_UTILS);
 
     // Kernel signature
     cuda.push_str("extern \"C\" __global__ void ");
@@ -997,6 +1066,14 @@ fn builtin_to_cuda(name: &str) -> String {
         "rand_init" => "forge_rand_init".to_string(),
         "rand_f32" | "randf" => "forge_randf".to_string(),
         "rand_u32" | "randi" => "forge_randi".to_string(),
+        // Tile primitives (cooperative block-level)
+        "tile_load" | "tile_load_f32" => "tile_load_f32".to_string(),
+        "tile_store" | "tile_store_f32" => "tile_store_f32".to_string(),
+        "tile_sum" | "tile_sum_f32" => "tile_sum_f32".to_string(),
+        "tile_max" | "tile_max_f32" => "tile_max_f32".to_string(),
+        "tile_min" | "tile_min_f32" => "tile_min_f32".to_string(),
+        "tile_scan_inclusive" | "tile_scan_inclusive_f32" => "tile_scan_inclusive_f32".to_string(),
+        "tile_matmul" | "tile_matmul_f32" => "tile_matmul_f32".to_string(),
         // Sync
         "syncthreads" | "sync_threads" => "__syncthreads".to_string(),
         "threadfence" | "thread_fence" => "__threadfence".to_string(),
