@@ -12,4 +12,6 @@ forge-runtime = { path = "../forge-runtime", features = ["cuda"] }
 forge-macros = { path = "../forge-macros" }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 rand = "0.8"
+tungstenite = "0.26"

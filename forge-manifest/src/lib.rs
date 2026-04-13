@@ -38,6 +38,7 @@ mod runner;
 mod validate;
 pub mod modules;
 pub mod expr;
+pub mod serve;
 mod manifest_runner;
 
 pub use schema::*;

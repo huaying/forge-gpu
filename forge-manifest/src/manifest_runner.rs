@@ -71,6 +71,95 @@ pub fn run_manifest(manifest: &SimManifest) -> Result<crate::SimResult, String> 
     })
 }
 
+/// Run a simulation with a frame callback for streaming.
+/// The callback receives (frame_number, &[f32]) where the f32 slice is interleaved x,y,z.
+/// `frame_interval` controls how often frames are emitted (every N substep groups).
+pub fn run_manifest_streaming<F>(
+    manifest: &SimManifest,
+    frame_interval: usize,
+    mut on_frame: F,
+) -> Result<crate::SimResult, String>
+where
+    F: FnMut(u32, &[f32]),
+{
+    crate::validate::validate(manifest)
+        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))?;
+
+    cuda::init();
+    if cuda::device_count() == 0 {
+        return Err("No GPU".into());
+    }
+
+    let device = Device::Cuda(0);
+    let n = manifest.particle_count();
+    let dt = manifest.simulation.dt as f32;
+    let substeps = manifest.simulation.substeps;
+    let duration = manifest.simulation.duration as f32;
+    let total_steps = ((duration / dt) as usize) / substeps.max(1) as usize;
+
+    let mut fields = FieldSet::new(n, device);
+    init_fields(&mut fields, manifest);
+
+    let pipeline = build_pipeline(manifest)?;
+
+    println!("  Pipeline: {} modules", pipeline.len());
+    println!("  Fields: {} f32, {} vec3",
+        fields.f32_fields.len(), fields.vec3_fields.len());
+    println!("  Streaming: frame every {} steps", frame_interval);
+    println!();
+
+    let start = std::time::Instant::now();
+    let mut step_count = 0usize;
+    let mut frame_num = 0u32;
+    let interval = frame_interval.max(1);
+
+    for step in 0..total_steps {
+        for _sub in 0..substeps {
+            pipeline.step(&mut fields, dt)
+                .map_err(|e| format!("Step {}: {}", step_count, e))?;
+            step_count += 1;
+        }
+
+        // Emit frame at interval
+        if step % interval == 0 {
+            let px = fields.f32_fields.get("pos_x").map(|a| a.to_vec()).unwrap_or_default();
+            let py = fields.f32_fields.get("pos_y").map(|a| a.to_vec()).unwrap_or_default();
+            let pz = fields.f32_fields.get("pos_z").map(|a| a.to_vec()).unwrap_or_default();
+
+            let mut positions = Vec::with_capacity(n * 3);
+            for i in 0..n {
+                positions.push(px.get(i).copied().unwrap_or(0.0));
+                positions.push(py.get(i).copied().unwrap_or(0.0));
+                positions.push(pz.get(i).copied().unwrap_or(0.0));
+            }
+
+            on_frame(frame_num, &positions);
+            frame_num += 1;
+        }
+    }
+
+    let elapsed = start.elapsed();
+
+    // Final positions
+    let px = fields.f32_fields.get("pos_x").map(|a| a.to_vec()).unwrap_or_default();
+    let py = fields.f32_fields.get("pos_y").map(|a| a.to_vec()).unwrap_or_default();
+    let pz = fields.f32_fields.get("pos_z").map(|a| a.to_vec()).unwrap_or_default();
+    let mut positions = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        positions.push(px.get(i).copied().unwrap_or(0.0));
+        positions.push(py.get(i).copied().unwrap_or(0.0));
+        positions.push(pz.get(i).copied().unwrap_or(0.0));
+    }
+
+    Ok(crate::SimResult {
+        positions,
+        count: n,
+        steps: step_count,
+        elapsed_secs: elapsed.as_secs_f64(),
+        frames: vec![],
+    })
+}
+
 fn init_fields(fields: &mut FieldSet, manifest: &SimManifest) {
     let n = manifest.particle_count();
 
