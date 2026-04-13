@@ -567,6 +567,100 @@ __device__ void tile_matmul_f32(float* C, const float* A, const float* B, int M,
 }
 "#;
 
+/// Tensor Core tile_matmul_tc via inline PTX (SM 8.0+).
+const FORGE_TC_UTILS: &str = r#"
+// ── Tensor Core GEMM via inline PTX (SM 8.0+) ──
+// Uses mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+
+__device__ unsigned int __f2h2(float a, float b) {
+    unsigned short ha, hb;
+    asm("cvt.rn.f16.f32 %0, %1;" : "=h"(ha) : "f"(a));
+    asm("cvt.rn.f16.f32 %0, %1;" : "=h"(hb) : "f"(b));
+    return ((unsigned int)hb << 16) | (unsigned int)ha;
+}
+
+__device__ void tile_matmul_tc(
+    float* C, const float* A, const float* B,
+    int M, int N, int K
+) {
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int num_warps = blockDim.x / 32;
+    int tiles_m = (M + 15) / 16;
+    int tiles_n = (N + 7) / 8;
+    int total_tiles = tiles_m * tiles_n;
+
+    for (int tile_idx = warp_id; tile_idx < total_tiles; tile_idx += num_warps) {
+        int tile_row = (tile_idx / tiles_n) * 16;
+        int tile_col = (tile_idx % tiles_n) * 8;
+        float c0 = 0.0f, c1 = 0.0f, c2 = 0.0f, c3 = 0.0f;
+
+        int c_row_base = lane_id / 4;
+        int c_col_base = (lane_id % 4) * 2;
+        int cr0 = tile_row + c_row_base;
+        int cr1 = tile_row + c_row_base + 8;
+        int cc0 = tile_col + c_col_base;
+        int cc1 = tile_col + c_col_base + 1;
+
+        if (cr0 < M && cc0 < N) c0 = C[cr0 * N + cc0];
+        if (cr0 < M && cc1 < N) c1 = C[cr0 * N + cc1];
+        if (cr1 < M && cc0 < N) c2 = C[cr1 * N + cc0];
+        if (cr1 < M && cc1 < N) c3 = C[cr1 * N + cc1];
+
+        for (int k_base = 0; k_base < K; k_base += 16) {
+            unsigned int a0, a1, a2, a3;
+            {
+                int a_row0 = tile_row + (lane_id / 4);
+                int a_row1 = tile_row + (lane_id / 4) + 8;
+                int a_k0 = k_base + (lane_id % 4) * 2;
+                float av00 = (a_row0<M && a_k0<K)   ? A[a_row0*K+a_k0]   : 0.0f;
+                float av01 = (a_row0<M && a_k0+1<K) ? A[a_row0*K+a_k0+1] : 0.0f;
+                float av10 = (a_row0<M && a_k0+8<K) ? A[a_row0*K+a_k0+8] : 0.0f;
+                float av11 = (a_row0<M && a_k0+9<K) ? A[a_row0*K+a_k0+9] : 0.0f;
+                float av20 = (a_row1<M && a_k0<K)   ? A[a_row1*K+a_k0]   : 0.0f;
+                float av21 = (a_row1<M && a_k0+1<K) ? A[a_row1*K+a_k0+1] : 0.0f;
+                float av30 = (a_row1<M && a_k0+8<K) ? A[a_row1*K+a_k0+8] : 0.0f;
+                float av31 = (a_row1<M && a_k0+9<K) ? A[a_row1*K+a_k0+9] : 0.0f;
+                a0 = __f2h2(av00, av01);
+                a1 = __f2h2(av10, av11);
+                a2 = __f2h2(av20, av21);
+                a3 = __f2h2(av30, av31);
+            }
+            unsigned int b0, b1;
+            {
+                int b_k0 = k_base + (lane_id / 4);
+                int b_k1 = b_k0 + 8;
+                int b_col = tile_col + (lane_id % 4) * 2;
+                float bv00 = (b_k0<K && b_col<N)   ? B[b_k0*N+b_col]   : 0.0f;
+                float bv01 = (b_k0<K && b_col+1<N) ? B[b_k0*N+b_col+1] : 0.0f;
+                float bv10 = (b_k1<K && b_col<N)   ? B[b_k1*N+b_col]   : 0.0f;
+                float bv11 = (b_k1<K && b_col+1<N) ? B[b_k1*N+b_col+1] : 0.0f;
+                b0 = __f2h2(bv00, bv01);
+                b1 = __f2h2(bv10, bv11);
+            }
+            asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                "{%0, %1, %2, %3}, "
+                "{%4, %5, %6, %7}, "
+                "{%8, %9}, "
+                "{%10, %11, %12, %13};"
+                : "+f"(c0), "+f"(c1), "+f"(c2), "+f"(c3)
+                : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
+                  "r"(b0), "r"(b1),
+                  "f"(c0), "f"(c1), "f"(c2), "f"(c3)
+            );
+        }
+
+        if (cr0 < M && cc0 < N) C[cr0 * N + cc0] = c0;
+        if (cr0 < M && cc1 < N) C[cr0 * N + cc1] = c1;
+        if (cr1 < M && cc0 < N) C[cr1 * N + cc0] = c2;
+        if (cr1 < M && cc1 < N) C[cr1 * N + cc1] = c3;
+    }
+    __syncthreads();
+}
+}
+"#;
+
 pub fn generate_cuda_source(
     kernel_name: &str,
     params: &[KernelParam],
