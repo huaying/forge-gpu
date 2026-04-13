@@ -362,63 +362,104 @@ impl SimModule for SphFusedModule {
             fields.add_f32_zeros("density", n);
         }
 
-        // ── Pass 1: Compute density ──
+        // ── Pass 1: Compute density (with shared memory tiling) ──
         let density_kernel = DENSITY_KERNEL.get_or_init(|| {
             forge_runtime::CompiledKernel::compile(
-                r#"extern "C" __global__ void sph_density(
+                r#"
+#define TILE_SIZE 128
+
+extern "C" __global__ void sph_density(
     const float* px, const float* py, const float* pz,
     float* density,
     const unsigned int* cell_start, const unsigned int* sorted_idx,
     float h, float mass, float cell_size,
     int grid_nx, int grid_ny, int grid_nz, int n
 ) {
+    // Shared memory tile for neighbor positions
+    __shared__ float spx[TILE_SIZE];
+    __shared__ float spy[TILE_SIZE];
+    __shared__ float spz[TILE_SIZE];
+
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    float xi = px[i], yi = py[i], zi = pz[i];
+    int tid = threadIdx.x;
+    int block_size = blockDim.x;
+
+    float xi, yi, zi;
+    bool valid = (i < n);
+    if (valid) { xi = px[i]; yi = py[i]; zi = pz[i]; }
+
     float h2 = h * h;
     float h9 = h2 * h2 * h2 * h2 * h;
     float poly6_coeff = 315.0f / (64.0f * 3.14159265f * h9);
     float rho = 0.0f;
-    int cx = (int)floorf(xi / cell_size);
-    int cy = (int)floorf(yi / cell_size);
-    int cz = (int)floorf(zi / cell_size);
+
+    // Each thread computes its own cell
+    int cx = valid ? (int)floorf(xi / cell_size) : 0;
+    int cy = valid ? (int)floorf(yi / cell_size) : 0;
+    int cz = valid ? (int)floorf(zi / cell_size) : 0;
     if (cx < 0) cx = 0; if (cx >= grid_nx) cx = grid_nx - 1;
     if (cy < 0) cy = 0; if (cy >= grid_ny) cy = grid_ny - 1;
     if (cz < 0) cz = 0; if (cz >= grid_nz) cz = grid_nz - 1;
+
+    // Iterate 3x3x3 neighbor cells
     for (int dz = -1; dz <= 1; dz++) {
-        int nz = cz + dz;
-        if (nz < 0 || nz >= grid_nz) continue;
         for (int dy = -1; dy <= 1; dy++) {
-            int ny = cy + dy;
-            if (ny < 0 || ny >= grid_ny) continue;
             for (int dx = -1; dx <= 1; dx++) {
-                int nx = cx + dx;
-                if (nx < 0 || nx >= grid_nx) continue;
-                unsigned int cell = (unsigned int)nx + (unsigned int)ny * (unsigned int)grid_nx + (unsigned int)nz * (unsigned int)grid_nx * (unsigned int)grid_ny;
-                unsigned int start = cell_start[cell];
-                unsigned int end = cell_start[cell + 1];
-                for (unsigned int s = start; s < end; s++) {
-                    int j = (int)sorted_idx[s];
-                    float djx = xi - px[j], djy = yi - py[j], djz = zi - pz[j];
-                    float r2 = djx*djx + djy*djy + djz*djz;
-                    if (r2 < h2) {
-                        float diff = h2 - r2;
-                        rho += mass * poly6_coeff * diff * diff * diff;
+                int ncx = cx + dx, ncy = cy + dy, ncz = cz + dz;
+                if (ncx < 0 || ncx >= grid_nx || ncy < 0 || ncy >= grid_ny || ncz < 0 || ncz >= grid_nz) continue;
+
+                unsigned int cell = (unsigned int)ncx + (unsigned int)ncy * (unsigned int)grid_nx + (unsigned int)ncz * (unsigned int)grid_nx * (unsigned int)grid_ny;
+                unsigned int cstart = cell_start[cell];
+                unsigned int cend = cell_start[cell + 1];
+                unsigned int count = cend - cstart;
+
+                // Process neighbors in tiles
+                for (unsigned int tile_base = 0; tile_base < count; tile_base += TILE_SIZE) {
+                    // Cooperatively load tile into shared memory
+                    unsigned int load_idx = tile_base + tid;
+                    if (load_idx < count) {
+                        int j = (int)sorted_idx[cstart + load_idx];
+                        spx[tid] = px[j];
+                        spy[tid] = py[j];
+                        spz[tid] = pz[j];
                     }
+                    __syncthreads();
+
+                    // Compute from shared memory
+                    unsigned int tile_count = count - tile_base;
+                    if (tile_count > TILE_SIZE) tile_count = TILE_SIZE;
+
+                    if (valid) {
+                        for (unsigned int t = 0; t < tile_count; t++) {
+                            float djx = xi - spx[t];
+                            float djy = yi - spy[t];
+                            float djz = zi - spz[t];
+                            float r2 = djx*djx + djy*djy + djz*djz;
+                            if (r2 < h2) {
+                                float diff = h2 - r2;
+                                rho += mass * poly6_coeff * diff * diff * diff;
+                            }
+                        }
+                    }
+                    __syncthreads();
                 }
             }
         }
     }
-    density[i] = rho;
+
+    if (valid) density[i] = rho;
 }"#,
                 "sph_density",
             ).expect("compile sph_density")
         });
 
-        // ── Pass 2: Fused pressure + viscosity ──
+        // ── Pass 2: Fused pressure + viscosity (with shared memory tiling) ──
         let fused_kernel = FUSED_FORCE_KERNEL.get_or_init(|| {
             forge_runtime::CompiledKernel::compile(
-                r#"extern "C" __global__ void sph_fused_force(
+                r#"
+#define TILE_SIZE 128
+
+extern "C" __global__ void sph_fused_force(
     const float* px, const float* py, const float* pz,
     float* vx, float* vy, float* vz,
     const float* density,
@@ -427,93 +468,129 @@ impl SimModule for SphFusedModule {
     float cell_size, int grid_nx, int grid_ny, int grid_nz,
     float dt, int n
 ) {
+    // Shared memory tiles: pos + vel + density of neighbors
+    __shared__ float spx[TILE_SIZE];
+    __shared__ float spy[TILE_SIZE];
+    __shared__ float spz[TILE_SIZE];
+    __shared__ float svx[TILE_SIZE];
+    __shared__ float svy[TILE_SIZE];
+    __shared__ float svz[TILE_SIZE];
+    __shared__ float srho[TILE_SIZE];
+
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
+    int tid = threadIdx.x;
 
-    float xi = px[i], yi = py[i], zi = pz[i];
-    float vxi = vx[i], vyi = vy[i], vzi = vz[i];
-    float rho_i = density[i];
-    if (rho_i < 1e-6f) return;
+    float xi, yi, zi, vxi, vyi, vzi, rho_i, p_i;
+    bool valid = (i < n);
+    if (valid) {
+        xi = px[i]; yi = py[i]; zi = pz[i];
+        vxi = vx[i]; vyi = vy[i]; vzi = vz[i];
+        rho_i = density[i];
+        p_i = gas_constant * (rho_i - rest_density);
+    }
+    if (valid && rho_i < 1e-6f) valid = false;
 
-    float p_i = gas_constant * (rho_i - rest_density);
     float h2 = h * h;
     float h6 = h2 * h2 * h2;
-
-    // Spiky gradient coeff: -45 / (pi * h^6)
     float spiky_grad_coeff = -45.0f / (3.14159265f * h6);
-    // Viscosity laplacian coeff: 45 / (pi * h^6)
     float visc_lap_coeff = 45.0f / (3.14159265f * h6);
 
-    float pax = 0.0f, pay = 0.0f, paz = 0.0f;  // pressure accel
-    float vax = 0.0f, vay = 0.0f, vaz = 0.0f;  // viscosity accel
+    float pax = 0.0f, pay = 0.0f, paz = 0.0f;
+    float vax = 0.0f, vay = 0.0f, vaz = 0.0f;
 
-    int cx = (int)floorf(xi / cell_size);
-    int cy = (int)floorf(yi / cell_size);
-    int cz = (int)floorf(zi / cell_size);
+    int cx = valid ? (int)floorf(xi / cell_size) : 0;
+    int cy = valid ? (int)floorf(yi / cell_size) : 0;
+    int cz = valid ? (int)floorf(zi / cell_size) : 0;
     if (cx < 0) cx = 0; if (cx >= grid_nx) cx = grid_nx - 1;
     if (cy < 0) cy = 0; if (cy >= grid_ny) cy = grid_ny - 1;
     if (cz < 0) cz = 0; if (cz >= grid_nz) cz = grid_nz - 1;
 
-    // Single neighbor traversal for both pressure and viscosity
     for (int dz = -1; dz <= 1; dz++) {
-        int nzz = cz + dz;
-        if (nzz < 0 || nzz >= grid_nz) continue;
         for (int dy = -1; dy <= 1; dy++) {
-            int nyy = cy + dy;
-            if (nyy < 0 || nyy >= grid_ny) continue;
             for (int dx = -1; dx <= 1; dx++) {
-                int nxx = cx + dx;
-                if (nxx < 0 || nxx >= grid_nx) continue;
+                int ncx = cx + dx, ncy = cy + dy, ncz = cz + dz;
+                if (ncx < 0 || ncx >= grid_nx || ncy < 0 || ncy >= grid_ny || ncz < 0 || ncz >= grid_nz) continue;
 
-                unsigned int cell = (unsigned int)nxx + (unsigned int)nyy * (unsigned int)grid_nx + (unsigned int)nzz * (unsigned int)grid_nx * (unsigned int)grid_ny;
-                unsigned int start = cell_start[cell];
-                unsigned int end = cell_start[cell + 1];
+                unsigned int cell = (unsigned int)ncx + (unsigned int)ncy * (unsigned int)grid_nx + (unsigned int)ncz * (unsigned int)grid_nx * (unsigned int)grid_ny;
+                unsigned int cstart = cell_start[cell];
+                unsigned int cend = cell_start[cell + 1];
+                unsigned int count = cend - cstart;
 
-                for (unsigned int s = start; s < end; s++) {
-                    int j = (int)sorted_idx[s];
-                    if (j == i) continue;
-
-                    float djx = xi - px[j], djy = yi - py[j], djz = zi - pz[j];
-                    float r2 = djx*djx + djy*djy + djz*djz;
-
-                    if (r2 < h2 && r2 > 1e-12f) {
-                        float r = sqrtf(r2);
-                        float rho_j = density[j];
-                        if (rho_j < 1e-6f) continue;
-                        float diff = h - r;
-
-                        // ── Pressure force ──
-                        float p_j = gas_constant * (rho_j - rest_density);
-                        float grad_scale = spiky_grad_coeff * diff * diff / r;
-                        float f_scale = -mass * (p_i + p_j) / (2.0f * rho_j) * grad_scale;
-                        pax += f_scale * djx;
-                        pay += f_scale * djy;
-                        paz += f_scale * djz;
-
-                        // ── Viscosity force ──
-                        float lap = visc_lap_coeff * diff;
-                        float v_scale = visc_coeff * mass / rho_j * lap;
-                        vax += v_scale * (vx[j] - vxi);
-                        vay += v_scale * (vy[j] - vyi);
-                        vaz += v_scale * (vz[j] - vzi);
+                for (unsigned int tile_base = 0; tile_base < count; tile_base += TILE_SIZE) {
+                    // Cooperatively load tile
+                    unsigned int load_idx = tile_base + tid;
+                    if (load_idx < count) {
+                        int j = (int)sorted_idx[cstart + load_idx];
+                        spx[tid] = px[j];
+                        spy[tid] = py[j];
+                        spz[tid] = pz[j];
+                        svx[tid] = vx[j];
+                        svy[tid] = vy[j];
+                        svz[tid] = vz[j];
+                        srho[tid] = density[j];
                     }
+                    __syncthreads();
+
+                    unsigned int tile_count = count - tile_base;
+                    if (tile_count > TILE_SIZE) tile_count = TILE_SIZE;
+
+                    if (valid) {
+                        for (unsigned int t = 0; t < tile_count; t++) {
+                            // Skip self (compare position — sorted index not available in tile)
+                            float djx = xi - spx[t];
+                            float djy = yi - spy[t];
+                            float djz = zi - spz[t];
+                            float r2 = djx*djx + djy*djy + djz*djz;
+
+                            if (r2 < h2 && r2 > 1e-12f) {
+                                float r = sqrtf(r2);
+                                float rho_j = srho[t];
+                                if (rho_j < 1e-6f) continue;
+                                float diff = h - r;
+
+                                // Pressure
+                                float p_j = gas_constant * (rho_j - rest_density);
+                                float grad_scale = spiky_grad_coeff * diff * diff / r;
+                                float f_scale = -mass * (p_i + p_j) / (2.0f * rho_j) * grad_scale;
+                                pax += f_scale * djx;
+                                pay += f_scale * djy;
+                                paz += f_scale * djz;
+
+                                // Viscosity
+                                float lap = visc_lap_coeff * diff;
+                                float v_scale = visc_coeff * mass / rho_j * lap;
+                                vax += v_scale * (svx[t] - vxi);
+                                vay += v_scale * (svy[t] - vyi);
+                                vaz += v_scale * (svz[t] - vzi);
+                            }
+                        }
+                    }
+                    __syncthreads();
                 }
             }
         }
     }
 
-    // Apply both forces
-    float inv_rho = 1.0f / rho_i;
-    vx[i] += ((pax + vax) * inv_rho) * dt;
-    vy[i] += ((pay + vay) * inv_rho) * dt;
-    vz[i] += ((paz + vaz) * inv_rho) * dt;
+    if (valid) {
+        float inv_rho = 1.0f / rho_i;
+        vx[i] += ((pax + vax) * inv_rho) * dt;
+        vy[i] += ((pay + vay) * inv_rho) * dt;
+        vz[i] += ((paz + vaz) * inv_rho) * dt;
+    }
 }"#,
                 "sph_fused_force",
             ).expect("compile sph_fused_force")
         });
 
         let stream = forge_runtime::cuda::default_stream(0);
-        let config = forge_runtime::cuda::LaunchConfig::for_num_elems(n as u32);
+        // Block size must match TILE_SIZE in kernels (128)
+        let sph_block_size = 128u32;
+        let sph_grid_size = (n as u32 + sph_block_size - 1) / sph_block_size;
+        let config = forge_runtime::cuda::LaunchConfig {
+            grid_dim: (sph_grid_size, 1, 1),
+            block_dim: (sph_block_size, 1, 1),
+            shared_mem_bytes: 0,
+        };
         let n_i32 = n as i32;
         let grid_nx = self.grid_dims[0] as i32;
         let grid_ny = self.grid_dims[1] as i32;
