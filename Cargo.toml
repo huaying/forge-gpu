@@ -24,6 +24,10 @@ path = "examples/particles.rs"
 name = "kernel_demo"
 path = "examples/kernel_demo.rs"
 
+[[example]]
+name = "spring_optimize"
+path = "examples/spring_optimize.rs"
+
 [dependencies]
 forge-core = { path = "forge-core" }
 forge-macros = { path = "forge-macros" }
