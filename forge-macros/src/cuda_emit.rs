@@ -1000,10 +1000,23 @@ fn builtin_to_cuda(name: &str) -> String {
         // Sync
         "syncthreads" | "sync_threads" => "__syncthreads".to_string(),
         "threadfence" | "thread_fence" => "__threadfence".to_string(),
-        // Thread indices
+        // Thread indices (1D-3D)
         "block_id" | "block_idx" => "blockIdx.x".to_string(),
+        "block_id_y" | "block_idx_y" => "blockIdx.y".to_string(),
+        "block_id_z" | "block_idx_z" => "blockIdx.z".to_string(),
         "block_dim" | "block_size" => "blockDim.x".to_string(),
+        "block_dim_y" => "blockDim.y".to_string(),
+        "block_dim_z" => "blockDim.z".to_string(),
         "thread_idx" | "local_thread_id" => "threadIdx.x".to_string(),
+        "thread_idx_y" => "threadIdx.y".to_string(),
+        "thread_idx_z" => "threadIdx.z".to_string(),
+        "grid_dim" | "grid_size" => "gridDim.x".to_string(),
+        "grid_dim_y" => "gridDim.y".to_string(),
+        "grid_dim_z" => "gridDim.z".to_string(),
+        // Global thread IDs (convenience)
+        "tid_x" => "(blockIdx.x * blockDim.x + threadIdx.x)".to_string(),
+        "tid_y" => "(blockIdx.y * blockDim.y + threadIdx.y)".to_string(),
+        "tid_z" => "(blockIdx.z * blockDim.z + threadIdx.z)".to_string(),
         // Passthrough
         other => other.to_string(),
     }
