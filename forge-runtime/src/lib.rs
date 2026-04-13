@@ -22,6 +22,7 @@ mod bvh;
 mod mesh;
 mod sparse;
 pub mod tile;
+pub mod radix_sort;
 
 pub use device::*;
 pub use array::*;
