@@ -1,0 +1,46 @@
+# Vortex Ring — 50K particles swirling in a torus
+# Particles initialized in a ring shape with tangential velocity.
+# Custom expression applies vortex force around Y axis.
+# Run: forge run examples/vortex-ring.toml
+
+[simulation]
+name = "vortex-ring"
+type = "particles"
+dt = 0.001
+substeps = 2
+duration = 2.0
+count = 50000
+
+# Initialize particles in a torus region:
+# Major radius ~1.5, minor radius ~0.5
+# Approximate with a random box around the torus region
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 50000
+init = { type = "random", min = [-2.0, 0.5, -2.0], max = [2.0, 1.5, 2.0] }
+
+# Initial tangential velocity: cross(up, pos) gives rotation
+# We'll use a custom expression to set the initial velocity in the vortex
+[[fields]]
+name = "velocity"
+type = "vec3f"
+init = { type = "zero" }
+
+# Vortex force: tangential force around Y axis + slight inward pull
+# (-pos.z, 0, pos.x) gives tangential direction in XZ plane
+# Small inward radial component keeps particles in the ring
+[[forces]]
+type = "custom"
+expr = "vel.x += (-pos.z * 3.0 - pos.x * 0.5) * dt; vel.z += (pos.x * 3.0 - pos.z * 0.5) * dt; vel.y += (1.0 - pos.y) * 2.0 * dt"
+
+# Damping prevents energy blowup
+[[forces]]
+type = "drag"
+coefficient = 0.02
+
+# Ground plane to catch any particles that fall
+[[constraints]]
+type = "ground_plane"
+y = -1.0
+restitution = 0.3

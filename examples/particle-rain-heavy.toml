@@ -1,0 +1,39 @@
+# Heavy Particle Rain — 200K stress test
+# Massive particle rain falling from the sky, bouncing off ground.
+# A visual stress test for GPU throughput.
+# Run: forge run examples/particle-rain-heavy.toml
+
+[simulation]
+name = "particle-rain-heavy"
+type = "particles"
+dt = 0.001
+substeps = 4
+duration = 5.0
+count = 200000
+
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 200000
+init = { type = "random", min = [-3.0, 5.0, -3.0], max = [3.0, 15.0, 3.0] }
+
+# Slight random horizontal velocity for natural spread
+[[fields]]
+name = "velocity"
+type = "vec3f"
+init = { type = "random", min = [-0.5, -2.0, -0.5], max = [0.5, 0.0, 0.5] }
+
+[[forces]]
+type = "gravity"
+value = [0.0, -9.81, 0.0]
+
+# Light drag for air resistance
+[[forces]]
+type = "drag"
+coefficient = 0.001
+
+# Ground plane with moderate bounce
+[[constraints]]
+type = "ground_plane"
+y = 0.0
+restitution = 0.5
