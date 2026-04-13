@@ -22,6 +22,8 @@ pub struct SphDensityModule {
 
 static CELL_INDEX_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
 static COUNT_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
+static PREFIX_SUM_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
+static PREFIX_SUM_FIXUP_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
 static SCATTER_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
 static DENSITY_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
 
@@ -169,18 +171,197 @@ impl SphDensityModule {
             b.arg(&n_i32);
             b.launch(config_n).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
 
-        // Step 3: Prefix sum on cell_count → cell_start
-        // This is a small array (num_cells), so CPU prefix sum is fine
-        // (GPU prefix sum only wins for >1M cells)
-        unsafe {
-            let counts = (*cell_count).to_vec();
-            let mut starts = vec![0u32; num_cells + 1];
-            for i in 0..num_cells {
-                starts[i + 1] = starts[i] + counts[i];
+        // ── Step 3 (GPU): Exclusive prefix sum on cell_count → cell_start ──
+        // Two-pass Blelloch scan: each block scans BLOCK_SIZE*2 elements,
+        // block totals go into a small array, scanned on second pass, then fixup.
+        let prefix_sum_kernel = PREFIX_SUM_KERNEL.get_or_init(|| {
+            forge_runtime::CompiledKernel::compile(
+                r#"
+// Block-level exclusive prefix sum (Blelloch scan) in shared memory.
+// Each block processes BLOCK_SIZE*2 elements.
+// block_sums[blockIdx.x] = total sum of this block's elements (for multi-block fixup).
+#define BLOCK_SIZE 512
+extern "C" __global__ void prefix_sum(
+    const unsigned int* input,
+    unsigned int* output,
+    unsigned int* block_sums,
+    int n
+) {
+    __shared__ unsigned int temp[BLOCK_SIZE * 2];
+    int tid = threadIdx.x;
+    int block_offset = blockIdx.x * BLOCK_SIZE * 2;
+    int ai = tid;
+    int bi = tid + BLOCK_SIZE;
+
+    // Load into shared memory
+    temp[ai] = (block_offset + ai < n) ? input[block_offset + ai] : 0;
+    temp[bi] = (block_offset + bi < n) ? input[block_offset + bi] : 0;
+
+    // Up-sweep (reduce)
+    int offset = 1;
+    for (int d = BLOCK_SIZE; d > 0; d >>= 1) {
+        __syncthreads();
+        if (tid < d) {
+            int ai2 = offset * (2 * tid + 1) - 1;
+            int bi2 = offset * (2 * tid + 2) - 1;
+            temp[bi2] += temp[ai2];
+        }
+        offset *= 2;
+    }
+
+    // Save block total and clear last element
+    __syncthreads();
+    if (tid == 0) {
+        if (block_sums != NULL) {
+            block_sums[blockIdx.x] = temp[BLOCK_SIZE * 2 - 1];
+        }
+        temp[BLOCK_SIZE * 2 - 1] = 0;
+    }
+
+    // Down-sweep
+    for (int d = 1; d < BLOCK_SIZE * 2; d *= 2) {
+        offset >>= 1;
+        __syncthreads();
+        if (tid < d) {
+            int ai2 = offset * (2 * tid + 1) - 1;
+            int bi2 = offset * (2 * tid + 2) - 1;
+            unsigned int t = temp[ai2];
+            temp[ai2] = temp[bi2];
+            temp[bi2] += t;
+        }
+    }
+    __syncthreads();
+
+    // Write output
+    if (block_offset + ai < n) output[block_offset + ai] = temp[ai];
+    if (block_offset + bi < n) output[block_offset + bi] = temp[bi];
+}
+"#,
+                "prefix_sum",
+            ).expect("compile prefix_sum")
+        });
+
+        let fixup_kernel = PREFIX_SUM_FIXUP_KERNEL.get_or_init(|| {
+            forge_runtime::CompiledKernel::compile(
+                r#"
+// Add block_sums[blockIdx.x] to all elements in each block.
+#define BLOCK_SIZE 512
+extern "C" __global__ void prefix_sum_fixup(
+    unsigned int* data,
+    const unsigned int* block_sums,
+    int n
+) {
+    int idx = blockIdx.x * BLOCK_SIZE * 2 + threadIdx.x;
+    if (blockIdx.x == 0) return; // first block needs no fixup
+    unsigned int add_val = block_sums[blockIdx.x];
+    if (idx < n) data[idx] += add_val;
+    idx += BLOCK_SIZE;
+    if (idx < n) data[idx] += add_val;
+}
+"#,
+                "prefix_sum_fixup",
+            ).expect("compile prefix_sum_fixup")
+        });
+
+        // cell_start has num_cells+1 elements: prefix sum of cell_count (num_cells),
+        // then append total at the end.
+        // We scan cell_count → cell_start[0..num_cells], then set cell_start[num_cells] = total.
+        {
+            let block_elems = 1024; // BLOCK_SIZE * 2
+            let num_blocks = (num_cells + block_elems - 1) / block_elems;
+            let mut block_sums = forge_runtime::Array::<u32>::zeros(num_blocks.max(1), device);
+
+            // First pass: per-block prefix sum
+            unsafe {
+                use forge_runtime::cuda::PushKernelArg;
+                let func = prefix_sum_kernel.get_function(0)?;
+                let launch_cfg = forge_runtime::cuda::LaunchConfig {
+                    grid_dim: (num_blocks as u32, 1, 1),
+                    block_dim: (512, 1, 1),
+                    shared_mem_bytes: 0,
+                };
+                let mut b = stream.launch_builder(&func);
+                b.arg((*cell_count).cuda_slice().unwrap());
+                // Write into cell_start (first num_cells elements)
+                b.arg((*cell_start).cuda_slice_mut().unwrap());
+                b.arg(block_sums.cuda_slice_mut().unwrap());
+                let nc_i32 = num_cells as i32;
+                b.arg(&nc_i32);
+                b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
             }
-            *cell_start = forge_runtime::Array::from_vec(starts, device);
+
+            if num_blocks > 1 {
+                // Scan block_sums (small array, ≤ few hundred blocks → single block scan)
+                let mut block_sums_scanned = forge_runtime::Array::<u32>::zeros(num_blocks, device);
+                unsafe {
+                    use forge_runtime::cuda::PushKernelArg;
+                    let func = prefix_sum_kernel.get_function(0)?;
+                    let launch_cfg = forge_runtime::cuda::LaunchConfig {
+                        grid_dim: (1, 1, 1),
+                        block_dim: (512, 1, 1),
+                        shared_mem_bytes: 0,
+                    };
+                    // Use a null pointer for block_sums output (single block, don't need it)
+                    let mut dummy = forge_runtime::Array::<u32>::zeros(1, device);
+                    let mut b = stream.launch_builder(&func);
+                    b.arg(block_sums.cuda_slice().unwrap());
+                    b.arg(block_sums_scanned.cuda_slice_mut().unwrap());
+                    b.arg(dummy.cuda_slice_mut().unwrap());
+                    let nb_i32 = num_blocks as i32;
+                    b.arg(&nb_i32);
+                    b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
+                }
+
+                // Fixup: add scanned block_sums to each block's elements
+                unsafe {
+                    use forge_runtime::cuda::PushKernelArg;
+                    let func = fixup_kernel.get_function(0)?;
+                    let launch_cfg = forge_runtime::cuda::LaunchConfig {
+                        grid_dim: (num_blocks as u32, 1, 1),
+                        block_dim: (512, 1, 1),
+                        shared_mem_bytes: 0,
+                    };
+                    let mut b = stream.launch_builder(&func);
+                    b.arg((*cell_start).cuda_slice_mut().unwrap());
+                    b.arg(block_sums_scanned.cuda_slice().unwrap());
+                    let nc_i32_2 = num_cells as i32;
+                    b.arg(&nc_i32_2);
+                    b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
+                }
+            }
+
+            // Set cell_start[num_cells] = n (total particle count)
+            // The exclusive prefix sum gives us cell_start[0..num_cells].
+            // cell_start[num_cells] needs to be n so the last cell's range is correct.
+            // Use a tiny kernel to avoid GPU→CPU→GPU round-trip.
+            {
+                static SET_LAST_KERNEL: OnceLock<forge_runtime::CompiledKernel> = OnceLock::new();
+                let set_last = SET_LAST_KERNEL.get_or_init(|| {
+                    forge_runtime::CompiledKernel::compile(
+                        r#"extern "C" __global__ void set_last(unsigned int* arr, int idx, unsigned int val) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) arr[idx] = val;
+}"#,
+                        "set_last",
+                    ).expect("compile set_last")
+                });
+                unsafe {
+                    use forge_runtime::cuda::PushKernelArg;
+                    let func = set_last.get_function(0)?;
+                    let launch_cfg = forge_runtime::cuda::LaunchConfig {
+                        grid_dim: (1, 1, 1),
+                        block_dim: (1, 1, 1),
+                        shared_mem_bytes: 0,
+                    };
+                    let num_cells_i32 = num_cells as i32;
+                    let n_u32 = n as u32;
+                    let mut b = stream.launch_builder(&func);
+                    b.arg((*cell_start).cuda_slice_mut().unwrap());
+                    b.arg(&num_cells_i32);
+                    b.arg(&n_u32);
+                    b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
+                }
+            }
         }
 
         // Step 4: scatter particles into sorted order
