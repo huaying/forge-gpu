@@ -287,39 +287,38 @@ extern "C" __global__ void prefix_sum_fixup(
                 b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
             }
 
-            if num_blocks > 1 {
-                unsafe {
-                    use forge_runtime::cuda::PushKernelArg;
-                    let func = prefix_sum_kernel.get_function(0)?;
-                    let launch_cfg = forge_runtime::cuda::LaunchConfig {
-                        grid_dim: (1, 1, 1),
-                        block_dim: (512, 1, 1),
-                        shared_mem_bytes: 0,
-                    };
-                    let nb_i32 = num_blocks as i32;
-                    let mut b = stream.launch_builder(&func);
-                    b.arg((*block_sums).cuda_slice().unwrap());
-                    b.arg((*block_sums_scanned).cuda_slice_mut().unwrap());
-                    b.arg((*dummy).cuda_slice_mut().unwrap());
-                    b.arg(&nb_i32);
-                    b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
-                }
+            // Always run block-level prefix sum + fixup (no branches → graph-compatible)
+            unsafe {
+                use forge_runtime::cuda::PushKernelArg;
+                let func = prefix_sum_kernel.get_function(0)?;
+                let launch_cfg = forge_runtime::cuda::LaunchConfig {
+                    grid_dim: (1, 1, 1),
+                    block_dim: (512, 1, 1),
+                    shared_mem_bytes: 0,
+                };
+                let nb_i32 = num_blocks as i32;
+                let mut b = stream.launch_builder(&func);
+                b.arg((*block_sums).cuda_slice().unwrap());
+                b.arg((*block_sums_scanned).cuda_slice_mut().unwrap());
+                b.arg((*dummy).cuda_slice_mut().unwrap());
+                b.arg(&nb_i32);
+                b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
+            }
 
-                unsafe {
-                    use forge_runtime::cuda::PushKernelArg;
-                    let func = fixup_kernel.get_function(0)?;
-                    let launch_cfg = forge_runtime::cuda::LaunchConfig {
-                        grid_dim: (num_blocks as u32, 1, 1),
-                        block_dim: (512, 1, 1),
-                        shared_mem_bytes: 0,
-                    };
-                    let nc_i32 = num_cells as i32;
-                    let mut b = stream.launch_builder(&func);
-                    b.arg((*cell_start).cuda_slice_mut().unwrap());
-                    b.arg((*block_sums_scanned).cuda_slice().unwrap());
-                    b.arg(&nc_i32);
-                    b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
-                }
+            unsafe {
+                use forge_runtime::cuda::PushKernelArg;
+                let func = fixup_kernel.get_function(0)?;
+                let launch_cfg = forge_runtime::cuda::LaunchConfig {
+                    grid_dim: (num_blocks as u32, 1, 1),
+                    block_dim: (512, 1, 1),
+                    shared_mem_bytes: 0,
+                };
+                let nc_i32 = num_cells as i32;
+                let mut b = stream.launch_builder(&func);
+                b.arg((*cell_start).cuda_slice_mut().unwrap());
+                b.arg((*block_sums_scanned).cuda_slice().unwrap());
+                b.arg(&nc_i32);
+                b.launch(launch_cfg).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
             }
 
             // Set cell_start[num_cells] = n
@@ -364,7 +363,7 @@ extern "C" __global__ void prefix_sum_fixup(
             b.arg(&n_i32);
             b.launch(config_n).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
         }
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+        // No sync needed — all ops on same stream are serialized
 
         Ok(())
     }
@@ -648,8 +647,7 @@ extern "C" __global__ void sph_fused_force(
             }
         }
 
-        // Sync before pass 2 (pressure needs density to be fully computed)
-        stream.synchronize().map_err(|e| ForgeError::SyncFailed(format!("{:?}", e)))?;
+        // No sync needed between pass 1 and pass 2 — same stream guarantees ordering
 
         // Pass 2: fused pressure + viscosity
         {
