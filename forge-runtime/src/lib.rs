@@ -17,6 +17,7 @@ mod error;
 pub mod cuda;
 mod kernel;
 mod tape;
+pub mod jacobian;
 mod hashgrid;
 mod bvh;
 mod mesh;

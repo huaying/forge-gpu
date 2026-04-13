@@ -104,6 +104,48 @@ impl Tape {
     pub fn clear(&self) {
         self.entries.lock().unwrap().clear();
     }
+
+    /// Register a custom backward function, overriding any previously recorded
+    /// backward with the same name.
+    ///
+    /// This is useful when you want to provide a hand-written adjoint kernel
+    /// instead of (or in addition to) an auto-generated one.
+    ///
+    /// If no entry with `name` exists, this appends it. If one does exist,
+    /// it replaces that entry's backward closure.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Record auto-generated backward
+    /// tape.record("my_kernel", auto_backward);
+    ///
+    /// // Override with custom adjoint
+    /// tape.register_custom_backward("my_kernel", move || {
+    ///     my_custom_adjoint::launch(&x, &output, &adj_output, &mut adj_x, n, 0)
+    /// });
+    /// ```
+    pub fn register_custom_backward<F>(&self, name: &str, backward: F)
+    where
+        F: FnOnce() -> Result<(), ForgeError> + Send + 'static,
+    {
+        let mut entries = self.entries.lock().unwrap();
+        // Look for an existing entry with this name and replace it
+        if let Some(entry) = entries.iter_mut().find(|e| e.name == name) {
+            entry.backward = Box::new(backward);
+        } else {
+            // No existing entry — append as new
+            entries.push(TapeEntry {
+                name: name.to_string(),
+                backward: Box::new(backward),
+            });
+        }
+    }
+
+    /// Check whether the tape has a recorded entry with the given name.
+    pub fn has_entry(&self, name: &str) -> bool {
+        self.entries.lock().unwrap().iter().any(|e| e.name == name)
+    }
 }
 
 impl Default for Tape {
