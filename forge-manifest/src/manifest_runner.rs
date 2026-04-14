@@ -298,10 +298,12 @@ fn init_vec3(n: usize, init: &Option<InitDef>) -> Vec<Vec3f> {
             let oy = origin.get(1).copied().unwrap_or(0.0) as f32;
             let oz = origin.get(2).copied().unwrap_or(0.0) as f32;
             let side = (n as f32).sqrt().ceil() as usize;
+            // Generate horizontal grid (X/Z plane at height Y=oy)
+            // This is more natural for cloth/sheet simulations
             (0..n).map(|i| {
                 let ix = i % side;
-                let iy = i / side;
-                Vec3f::new(ox + ix as f32 * sp, oy + iy as f32 * sp, oz)
+                let iz = i / side;
+                Vec3f::new(ox + ix as f32 * sp, oy, oz + iz as f32 * sp)
             }).collect()
         }
         _ => vec![Vec3f::zero(); n],

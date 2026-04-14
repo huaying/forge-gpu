@@ -21,18 +21,19 @@ name = "velocity"
 type = "vec3f"
 init = { type = "zero" }
 
-# Custom vortex force: particles orbit around Y axis
-# Cross product of (0,1,0) × pos gives tangential direction
+# Vortex force: tangential rotation around Y axis + radial pull toward r=1.5
+# cross(up, pos) gives tangential direction; -(r - r0)*pos/r gives radial restore
+# This creates a stable orbit instead of exponential spiral
 [[forces]]
 type = "custom"
-expr = "vel.x += (-pos.z * 2.0) * dt; vel.z += (pos.x * 2.0) * dt; vel.y += (-0.5) * dt"
+expr = "vel.x += (-pos.z * 2.0 - pos.x * 1.0) * dt; vel.z += (pos.x * 2.0 - pos.z * 1.0) * dt; vel.y += (-2.0 * pos.y + 2.0) * dt"
 
-# Damping to prevent runaway
+# Strong damping to stabilize the orbit
 [[forces]]
 type = "drag"
-coefficient = 0.01
+coefficient = 1.5
 
 [[constraints]]
 type = "ground_plane"
 y = 0.0
-restitution = 0.5
+restitution = 0.3

@@ -13,22 +13,24 @@ impl SimModule for SpringModule {
     fn name(&self) -> &str { "spring" }
 
     fn execute(&self, fields: &mut FieldSet, dt: f32) -> Result<(), ForgeError> {
-        let pairs = fields.index_pairs.get("springs")
-            .ok_or_else(|| ForgeError::LaunchFailed("missing 'springs' index pairs".into()))?;
-        let n_springs = pairs.len();
+        let n_springs = fields.index_pairs.get("springs")
+            .map(|p| p.len())
+            .unwrap_or(0);
         if n_springs == 0 { return Ok(()); }
 
-        // Upload spring pairs as flat arrays
-        let si: Vec<i32> = pairs.iter().map(|p| p[0] as i32).collect();
-        let sj: Vec<i32> = pairs.iter().map(|p| p[1] as i32).collect();
-        let spring_i = forge_runtime::Array::from_vec(si, fields.device);
-        let spring_j = forge_runtime::Array::from_vec(sj, fields.device);
+        // ── First call: upload spring topology + rest lengths to GPU (cached) ──
+        if !fields.i32_fields.contains_key("spring_i") {
+            let pairs = fields.index_pairs.get("springs").unwrap();
+            let si: Vec<i32> = pairs.iter().map(|p| p[0] as i32).collect();
+            let sj: Vec<i32> = pairs.iter().map(|p| p[1] as i32).collect();
+            fields.i32_fields.insert("spring_i".to_string(),
+                forge_runtime::Array::from_vec(si, fields.device));
+            fields.i32_fields.insert("spring_j".to_string(),
+                forge_runtime::Array::from_vec(sj, fields.device));
+        }
 
-        // Compute rest lengths if not stored
-        let rest_lengths = if let Some(rl) = fields.f32_fields.get("rest_length") {
-            None // already on GPU
-        } else {
-            // Compute from current positions
+        if !fields.f32_fields.contains_key("rest_length") {
+            let pairs = fields.index_pairs.get("springs").unwrap();
             let px = fields.f32_fields.get("pos_x").unwrap().to_vec();
             let py = fields.f32_fields.get("pos_y").unwrap().to_vec();
             let pz = fields.f32_fields.get("pos_z").unwrap().to_vec();
@@ -38,10 +40,11 @@ impl SimModule for SpringModule {
                 let dz = pz[p[0] as usize] - pz[p[1] as usize];
                 (dx*dx + dy*dy + dz*dz).sqrt()
             }).collect();
-            let arr = forge_runtime::Array::from_vec(rests, fields.device);
-            Some(arr)
-        };
+            fields.f32_fields.insert("rest_length".to_string(),
+                forge_runtime::Array::from_vec(rests, fields.device));
+        }
 
+        // ── Kernel (compiled once) ──
         let kernel = KERNEL.get_or_init(|| {
             forge_runtime::CompiledKernel::compile(
                 r#"extern "C" __global__ void spring_force(
@@ -72,6 +75,7 @@ impl SimModule for SpringModule {
             ).expect("compile spring")
         });
 
+        // ── Launch (all data already on GPU — graph-safe) ──
         let func = kernel.get_function(0)?;
         let stream = forge_runtime::cuda::default_stream(0);
         let config = forge_runtime::cuda::LaunchConfig::for_num_elems(n_springs as u32);
@@ -83,12 +87,9 @@ impl SimModule for SpringModule {
         let vx = fields.f32_fields.get_mut("vel_x").unwrap() as *mut forge_runtime::Array<f32>;
         let vy = fields.f32_fields.get_mut("vel_y").unwrap() as *mut forge_runtime::Array<f32>;
         let vz = fields.f32_fields.get_mut("vel_z").unwrap() as *mut forge_runtime::Array<f32>;
-
-        let rest_arr = if let Some(ref rl) = rest_lengths {
-            rl
-        } else {
-            fields.f32_fields.get("rest_length").unwrap()
-        };
+        let spring_i = fields.i32_fields.get("spring_i").unwrap() as *const forge_runtime::Array<i32>;
+        let spring_j = fields.i32_fields.get("spring_j").unwrap() as *const forge_runtime::Array<i32>;
+        let rest = fields.f32_fields.get("rest_length").unwrap() as *const forge_runtime::Array<f32>;
 
         unsafe {
             use forge_runtime::cuda::PushKernelArg;
@@ -99,20 +100,14 @@ impl SimModule for SpringModule {
             b.arg((*vx).cuda_slice_mut().unwrap());
             b.arg((*vy).cuda_slice_mut().unwrap());
             b.arg((*vz).cuda_slice_mut().unwrap());
-            b.arg(spring_i.cuda_slice().unwrap());
-            b.arg(spring_j.cuda_slice().unwrap());
-            b.arg(rest_arr.cuda_slice().unwrap());
+            b.arg((*spring_i).cuda_slice().unwrap());
+            b.arg((*spring_j).cuda_slice().unwrap());
+            b.arg((*rest).cuda_slice().unwrap());
             b.arg(&self.stiffness);
             b.arg(&self.damping);
             b.arg(&dt);
             b.arg(&ns_i32);
             b.launch(config).map_err(|e| ForgeError::LaunchFailed(format!("{:?}", e)))?;
-        }
-
-
-        // Store rest lengths for next step
-        if let Some(rl) = rest_lengths {
-            fields.f32_fields.insert("rest_length".to_string(), rl);
         }
 
         Ok(())

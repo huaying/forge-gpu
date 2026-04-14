@@ -18,7 +18,16 @@ impl SimModule for IntegrateModule {
                     float* vx, float* vy, float* vz,
                     float dt, int n) {
                     int i = blockIdx.x * blockDim.x + threadIdx.x;
-                    if (i < n) { px[i] += vx[i]*dt; py[i] += vy[i]*dt; pz[i] += vz[i]*dt; }
+                    if (i < n) {
+                        // NaN/Inf safety: clamp velocity to prevent simulation explosion
+                        float _vx = vx[i], _vy = vy[i], _vz = vz[i];
+                        if (!isfinite(_vx)) { _vx = 0.0f; vx[i] = 0.0f; }
+                        if (!isfinite(_vy)) { _vy = 0.0f; vy[i] = 0.0f; }
+                        if (!isfinite(_vz)) { _vz = 0.0f; vz[i] = 0.0f; }
+                        px[i] += _vx * dt;
+                        py[i] += _vy * dt;
+                        pz[i] += _vz * dt;
+                    }
                 }"#,
                 "integrate",
             ).expect("compile integrate")
