@@ -140,7 +140,7 @@ fn main() {
                 // Determine frame interval: target ~30 fps in viewer
                 // Each "step" is substeps × dt seconds of sim time
                 let sim_step_time = manifest.simulation.dt * manifest.simulation.substeps as f64;
-                let frame_interval = (1.0 / 30.0 / sim_step_time).max(1.0) as usize;
+                let frame_interval = 4.max(1); // every 4 steps for balance
 
                 let fb = Arc::clone(&frame_buf);
                 match run_manifest_streaming(&manifest, frame_interval, |frame_num, positions| {
@@ -148,6 +148,10 @@ fn main() {
                     buf.set_frame(frame_num, positions);
                 }) {
                     Ok(result) => {
+                        {
+                            let mut buf = fb.lock().unwrap();
+                            buf.set_complete();
+                        }
                         println!("✅ Simulation complete!");
                         println!("  Steps: {}", result.steps);
                         println!("  Time: {:.3}s", result.elapsed_secs);

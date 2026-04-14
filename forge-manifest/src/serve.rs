@@ -23,6 +23,10 @@ pub struct FrameBuffer {
     pub data: Vec<u8>,
     pub frame_number: u32,
     pub ready: bool,
+    /// All recorded frames for playback
+    pub history: Vec<Vec<u8>>,
+    /// Whether simulation is complete (enables looping playback)
+    pub complete: bool,
 }
 
 impl FrameBuffer {
@@ -31,6 +35,8 @@ impl FrameBuffer {
             data: Vec::new(),
             frame_number: 0,
             ready: false,
+            history: Vec::new(),
+            complete: false,
         }
     }
 
@@ -51,6 +57,13 @@ impl FrameBuffer {
 
         self.frame_number = frame_num;
         self.ready = true;
+        // Record frame for playback
+        self.history.push(self.data.clone());
+    }
+
+    /// Mark simulation as complete
+    pub fn set_complete(&mut self) {
+        self.complete = true;
     }
 }
 
@@ -115,14 +128,59 @@ fn handle_connection(mut stream: TcpStream, frame_buf: Arc<Mutex<FrameBuffer>>) 
             thread::sleep(std::time::Duration::from_millis(8));
         }
     } else {
-        // Regular HTTP — serve the viewer page
+        // Regular HTTP
         use std::io::Write;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\nConnection: close\r\n\r\n{}",
-            VIEWER_HTML.len(),
-            VIEWER_HTML
-        );
-        let _ = stream.write_all(response.as_bytes());
+
+        let request_str = std::str::from_utf8(&peek_buf[..n]).unwrap_or("");
+        if request_str.contains("GET /frame/") {
+            // Serve specific frame by index: /frame/42
+            let fb = frame_buf.lock().unwrap();
+            let idx_str = request_str.split("GET /frame/").nth(1).unwrap_or("0")
+                .split_whitespace().next().unwrap_or("0")
+                .split('?').next().unwrap_or("0");  // strip ?query
+            let idx: usize = idx_str.parse().unwrap_or(0);
+            if idx < fb.history.len() {
+                let data = &fb.history[idx];
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                    data.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(data);
+            } else {
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+            }
+        } else if request_str.contains("GET /info") {
+            // Return frame count and status as JSON
+            let fb = frame_buf.lock().unwrap();
+            let json = format!(r#"{{"frames":{},"complete":{}}}"#, fb.history.len(), fb.complete);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+                json.len(), json
+            );
+            let _ = stream.write_all(response.as_bytes());
+        } else if request_str.contains("GET /frame") {
+            // HTTP polling fallback — serve last frame as binary
+            let fb = frame_buf.lock().unwrap();
+            if !fb.data.is_empty() {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                    fb.data.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&fb.data);
+            } else {
+                let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+            }
+        } else {
+            // Serve the viewer page
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\nConnection: close\r\n\r\n{}",
+                VIEWER_HTML.len(),
+                VIEWER_HTML
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
     }
 }
 

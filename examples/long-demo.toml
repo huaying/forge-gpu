@@ -1,0 +1,28 @@
+[simulation]
+name = "long-demo"
+type = "particles"
+dt = 0.001
+substeps = 4
+duration = 60.0
+count = 50000
+
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 50000
+init = { type = "random", min = [-3.0, 0.0, -3.0], max = [3.0, 10.0, 3.0] }
+
+[[fields]]
+name = "velocity"
+type = "vec3f"
+init = { type = "zero" }
+
+[[forces]]
+type = "gravity"
+value = [0.0, -9.81, 0.0]
+
+[[constraints]]
+type = "box"
+min = [-4.0, 0.0, -4.0]
+max = [4.0, 20.0, 4.0]
+restitution = 0.5

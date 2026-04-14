@@ -1,0 +1,28 @@
+[simulation]
+name = "drop-bounce"
+type = "particles"
+dt = 0.002
+substeps = 2
+duration = 8.0
+count = 5000
+
+[[fields]]
+name = "position"
+type = "vec3f"
+count = 5000
+init = { type = "random", min = [-0.5, 8.0, -0.5], max = [0.5, 10.0, 0.5] }
+
+[[fields]]
+name = "velocity"
+type = "vec3f"
+init = { type = "zero" }
+
+[[forces]]
+type = "gravity"
+value = [0.0, -9.81, 0.0]
+
+[[constraints]]
+type = "box"
+min = [-5.0, 0.0, -5.0]
+max = [5.0, 15.0, 5.0]
+restitution = 0.8
